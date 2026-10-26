@@ -25,8 +25,22 @@ export default function App() {
     return localStorage.getItem('ubu_gas_url') || '';
   });
 
-  // State for UBU Condom Application
-  const [locations, setLocations] = useState<UbuLocation[]>(INITIAL_UBU_LOCATIONS);
+  // State for UBU Condom Application with localStorage persistence
+  const [locations, setLocations] = useState<UbuLocation[]>(() => {
+    const saved = localStorage.getItem('ubu_locations_data');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {}
+    }
+    return INITIAL_UBU_LOCATIONS;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('ubu_locations_data', JSON.stringify(locations));
+  }, [locations]);
+
   const [volunteerLogs, setVolunteerLogs] = useState<VolunteerLog[]>(INITIAL_VOLUNTEER_LOGS);
   const [ratings, setRatings] = useState<number[]>(INITIAL_RATINGS);
   const [isLoading, setIsLoading] = useState(false);
@@ -226,6 +240,37 @@ export default function App() {
     }
   };
 
+  // 5. Admin Add Location
+  const handleAddLocation = (newLoc: Omit<UbuLocation, 'id'>) => {
+    const newId = Date.now();
+    const created: UbuLocation = {
+      id: newId,
+      ...newLoc,
+    };
+    setLocations(prev => [created, ...prev]);
+    showToast(`เพิ่มจุดติดตั้ง "${newLoc.name}" เรียบร้อยแล้ว`, 'success');
+  };
+
+  // 6. Admin Edit Location
+  const handleEditLocation = (id: string | number, updated: Partial<UbuLocation>) => {
+    setLocations(prev => prev.map(loc => loc.id === id ? { ...loc, ...updated } : loc));
+    showToast(`บันทึกการแก้ไขจุดติดตั้งเรียบร้อยแล้ว`, 'success');
+  };
+
+  // 7. Admin Delete Location
+  const handleDeleteLocation = (id: string | number) => {
+    const target = locations.find(l => l.id === id);
+    setLocations(prev => prev.filter(loc => loc.id !== id));
+    showToast(`ลบจุดติดตั้ง "${target?.name || ''}" ออกจากระบบแล้ว`, 'info');
+  };
+
+  // 8. Admin Reset Default Locations
+  const handleResetDefaultLocations = () => {
+    setLocations(INITIAL_UBU_LOCATIONS);
+    localStorage.setItem('ubu_locations_data', JSON.stringify(INITIAL_UBU_LOCATIONS));
+    showToast('คืนค่าจุดติดตั้งกลับเป็น 15 จุดเริ่มต้นของ ม.อุบลฯ เรียบร้อยแล้ว', 'info');
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 text-slate-800 flex flex-col font-sans p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl w-full mx-auto space-y-6 flex-1 flex flex-col">
@@ -246,7 +291,7 @@ export default function App() {
             if (gasUrl) {
               handleFetchFromGas(gasUrl);
             } else {
-              showToast('อยู่ในโหมดข้อมูลจำลอง ม.อุบลฯ', 'info');
+              showToast('รีเฟรชข้อมูลเรียบร้อยแล้ว', 'info');
             }
           }}
           onOpenConfig={() => setIsConfigModalOpen(true)}
@@ -277,10 +322,12 @@ export default function App() {
               logs={volunteerLogs}
               ratings={ratings}
               onToggleLocationStatus={handleToggleLocationStatus}
+              onAddLocation={handleAddLocation}
+              onEditLocation={handleEditLocation}
+              onDeleteLocation={handleDeleteLocation}
+              onResetDefaultLocations={handleResetDefaultLocations}
               onRefreshData={() => handleFetchFromGas(gasUrl)}
               isLoading={isLoading}
-              gasUrl={gasUrl}
-              onSaveGasUrl={handleSaveGasUrl}
             />
           )}
         </main>

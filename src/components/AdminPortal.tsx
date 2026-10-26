@@ -15,26 +15,50 @@ import {
   Building2,
   Layers,
   Sparkles,
-  Link2,
-  Copy,
+  Plus,
+  Pencil,
+  Trash2,
+  MapPin,
+  Compass,
+  Crosshair,
   ExternalLink,
-  ShieldCheck,
-  Check,
-  FileSpreadsheet
+  Search,
+  RotateCcw,
+  X,
+  Check
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { UbuLocation, VolunteerLog } from '../types/ubuCondom';
-import { GOOGLE_APPS_SCRIPT_CODE } from '../data/ubuData';
+
+// คณะและหน่วยงานหลักในมหาวิทยาลัยอุบลราชธานี
+const UBU_ZONES = [
+  'คณะวิทยาศาสตร์',
+  'คณะเกษตรศาสตร์',
+  'คณะวิศวกรรมศาสตร์',
+  'คณะศิลปศาสตร์',
+  'คณะเภสัชศาสตร์',
+  'คณะบริหารศาสตร์',
+  'คณะพยาบาลศาสตร์',
+  'คณะศิลปประยุกต์และสถาปัตยกรรมศาสตร์',
+  'คณะนิติศาสตร์',
+  'คณะรัฐศาสตร์',
+  'วิทยาลัยแพทยศาสตร์และการสาธารณสุข',
+  'โรงพยาบาลมหาวิทยาลัยอุบลราชธานี',
+  'อาคารเรียนรวม / ส่วนกลาง',
+  'หอพักนักศึกษา',
+];
 
 interface AdminPortalProps {
   locations: UbuLocation[];
   logs: VolunteerLog[];
   ratings: number[];
   onToggleLocationStatus: (locationName: string, currentStatus: string) => Promise<void>;
+  onAddLocation?: (location: Omit<UbuLocation, 'id'>) => void;
+  onEditLocation?: (id: string | number, updated: Partial<UbuLocation>) => void;
+  onDeleteLocation?: (id: string | number) => void;
+  onResetDefaultLocations?: () => void;
   onRefreshData: () => Promise<void>;
   isLoading?: boolean;
-  gasUrl?: string;
-  onSaveGasUrl?: (url: string) => Promise<void>;
 }
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
@@ -42,24 +66,35 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   logs,
   ratings,
   onToggleLocationStatus,
+  onAddLocation,
+  onEditLocation,
+  onDeleteLocation,
+  onResetDefaultLocations,
   onRefreshData,
   isLoading,
-  gasUrl = '',
-  onSaveGasUrl,
 }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  // GAS URL State
-  const [inputGasUrl, setInputGasUrl] = useState(gasUrl);
-  const [isCopiedCode, setIsCopiedCode] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [isTestingGas, setIsTestingGas] = useState(false);
-  const [isSavingGas, setIsSavingGas] = useState(false);
-  const [showCodeModal, setShowCodeModal] = useState(false);
+  // Location Management State
+  const [locationSearch, setLocationSearch] = useState('');
+  const [locationFilter, setLocationFilter] = useState<'all' | 'available' | 'empty'>('all');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<'add' | 'edit'>('add');
+  const [editingId, setEditingId] = useState<string | number | null>(null);
 
-  // Filters
+  // Form State for Add/Edit Location
+  const [formName, setFormName] = useState('');
+  const [formZone, setFormZone] = useState('');
+  const [formLandmark, setFormLandmark] = useState('');
+  const [formLat, setFormLat] = useState<number | ''>(15.1190);
+  const [formLng, setFormLng] = useState<number | ''>(104.9060);
+  const [formStatus, setFormStatus] = useState<'มีอยู่' | 'หมดแล้ว'>('มีอยู่');
+  const [isLocatingGps, setIsLocatingGps] = useState(false);
+  const [formError, setFormError] = useState('');
+
+  // Table Filters
   const [filterDate, setFilterDate] = useState('');
   const [filterLocation, setFilterLocation] = useState('');
   const [filterMinQty, setFilterMinQty] = useState<number | ''>('');
@@ -74,7 +109,120 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     }
   };
 
-  // 1. Overall Product totals
+  // Open Modal for Add
+  const handleOpenAddModal = () => {
+    setModalMode('add');
+    setEditingId(null);
+    setFormName('');
+    setFormZone(UBU_ZONES[0]);
+    setFormLandmark('');
+    setFormLat(15.1190);
+    setFormLng(104.9060);
+    setFormStatus('มีอยู่');
+    setFormError('');
+    setIsModalOpen(true);
+  };
+
+  // Open Modal for Edit
+  const handleOpenEditModal = (loc: UbuLocation) => {
+    setModalMode('edit');
+    setEditingId(loc.id);
+    setFormName(loc.name);
+    setFormZone(loc.zone || UBU_ZONES[0]);
+    setFormLandmark(loc.landmark || '');
+    setFormLat(loc.lat);
+    setFormLng(loc.lng);
+    setFormStatus(loc.status === 'หมดแล้ว' ? 'หมดแล้ว' : 'มีอยู่');
+    setFormError('');
+    setIsModalOpen(true);
+  };
+
+  // Auto-fill GPS from current device
+  const handleGetDeviceGps = () => {
+    if (!navigator.geolocation) {
+      alert('อุปกรณ์ของคุณไม่รองรับการดึงพิกัด GPS');
+      return;
+    }
+
+    setIsLocatingGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setFormLat(Number(pos.coords.latitude.toFixed(6)));
+        setFormLng(Number(pos.coords.longitude.toFixed(6)));
+        setIsLocatingGps(false);
+      },
+      (err) => {
+        setIsLocatingGps(false);
+        alert('ไม่สามารถดึงตำแหน่ง GPS ได้ โปรดอนุญาตสิทธิ์ Location ในเบราว์เซอร์');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  // Save Add/Edit
+  const handleSaveLocation = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName.trim()) {
+      setFormError('กรุณากรอกชื่อจุดติดตั้ง / อาคาร');
+      return;
+    }
+    if (formLat === '' || formLng === '') {
+      setFormError('กรุณาระบุพิกัดละติจูดและลองจิจูดให้ถูกต้อง');
+      return;
+    }
+
+    if (modalMode === 'add') {
+      if (onAddLocation) {
+        onAddLocation({
+          name: formName.trim(),
+          zone: formZone.trim(),
+          landmark: formLandmark.trim(),
+          lat: Number(formLat),
+          lng: Number(formLng),
+          status: formStatus,
+        });
+      }
+    } else if (modalMode === 'edit' && editingId !== null) {
+      if (onEditLocation) {
+        onEditLocation(editingId, {
+          name: formName.trim(),
+          zone: formZone.trim(),
+          landmark: formLandmark.trim(),
+          lat: Number(formLat),
+          lng: Number(formLng),
+          status: formStatus,
+        });
+      }
+    }
+
+    setIsModalOpen(false);
+  };
+
+  // Delete Location Confirmation
+  const handleDeleteClick = (loc: UbuLocation) => {
+    if (window.confirm(`⚠️ คุณแน่ใจหรือไม่ว่าต้องการ "ลบจุดติดตั้งนี้" ออกจากระบบ?\n\n• ชื่อจุด: ${loc.name}\n\nเมื่อลบแล้ว จุดนี้จะไม่แสดงบนแผนที่และรายการเติมของจิตอาสาอีกต่อไป`)) {
+      if (onDeleteLocation) {
+        onDeleteLocation(loc.id);
+      }
+    }
+  };
+
+  // Filtered locations for management view
+  const filteredLocationList = useMemo(() => {
+    return locations.filter(loc => {
+      const matchSearch = loc.name.toLowerCase().includes(locationSearch.toLowerCase()) ||
+        (loc.zone && loc.zone.toLowerCase().includes(locationSearch.toLowerCase())) ||
+        (loc.landmark && loc.landmark.toLowerCase().includes(locationSearch.toLowerCase()));
+
+      if (!matchSearch) return false;
+
+      if (locationFilter === 'available') return loc.status === 'มีอยู่';
+      if (locationFilter === 'empty') return loc.status === 'หมดแล้ว';
+      return true;
+    });
+  }, [locations, locationSearch, locationFilter]);
+
+  // Overall Product totals
   const productTotals = useMemo(() => {
     let lubricant = 0;
     let size49 = 0;
@@ -102,16 +250,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     };
   }, [logs]);
 
-  // 2. Location Replenish Stats
+  // Location Replenish Stats
   const locationStats = useMemo(() => {
     const counts: Record<string, { total: number; lubricant: number; condoms: number }> = {};
     
-    // Initialize all existing locations
     locations.forEach(loc => { 
       counts[loc.name] = { total: 0, lubricant: 0, condoms: 0 }; 
     });
 
-    // Sum logs
     logs.forEach(log => {
       if (!counts[log.location]) {
         counts[log.location] = { total: 0, lubricant: 0, condoms: 0 };
@@ -133,7 +279,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const maxReplenished = Math.max(1, ...locationStats.map(s => s.total));
   const topLocation = locationStats[0] || { name: 'ไม่มีข้อมูล', total: 0 };
 
-  // 3. Ratings distribution & CSAT
+  // Ratings distribution & CSAT
   const ratingsDist = useMemo(() => {
     const starCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
     ratings.forEach(r => {
@@ -161,7 +307,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return Math.round((highCount / ratings.length) * 100);
   }, [ratings]);
 
-  // 4. Filtered Logs
+  // Filtered Logs
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
       if (filterDate && !log.date.startsWith(filterDate)) return false;
@@ -211,54 +357,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     window.print();
   };
 
-  const handleCopyScriptCode = () => {
-    navigator.clipboard.writeText(GOOGLE_APPS_SCRIPT_CODE);
-    setIsCopiedCode(true);
-    setTimeout(() => setIsCopiedCode(false), 3000);
-  };
-
-  const handleTestGasConnection = async () => {
-    if (!inputGasUrl.trim()) {
-      setTestResult({ success: false, message: 'โปรดกรอก Google Apps Script Web App URL ก่อนทดสอบ' });
-      return;
-    }
-
-    setIsTestingGas(true);
-    setTestResult(null);
-    try {
-      const proxyUrl = `/api/gas-proxy?url=${encodeURIComponent(inputGasUrl.trim() + '?action=getLocations')}`;
-      const res = await fetch(proxyUrl);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (data && (Array.isArray(data) || Array.isArray(data.data) || data.locations)) {
-        setTestResult({
-          success: true,
-          message: '✓ เชื่อมต่อสำเร็จ! สามารถอ่านข้อมูล 15 จุดบริการจาก Google Sheets ได้เรียบร้อยแล้ว',
-        });
-      } else {
-        setTestResult({
-          success: true,
-          message: '✓ เชื่อมต่อ Web App ได้เรียบร้อยแล้ว',
-        });
-      }
-    } catch (err: any) {
-      setTestResult({
-        success: false,
-        message: '✕ เชื่อมต่อไม่สำเร็จ: โปรดตรวจสอบว่าตั้งค่าสิทธิ์ Deploy เป็น "Anyone" (ทุกคน) ใน Apps Script',
-      });
-    } finally {
-      setIsTestingGas(false);
-    }
-  };
-
-  const handleSaveGasConnection = async () => {
-    if (onSaveGasUrl) {
-      setIsSavingGas(true);
-      await onSaveGasUrl(inputGasUrl.trim());
-      setIsSavingGas(false);
-    }
-  };
-
   if (!isAuthenticated) {
     return (
       <div className="max-w-md mx-auto my-12 bg-white border border-slate-200 rounded-3xl p-8 custom-shadow text-center space-y-6 animate-in fade-in">
@@ -268,9 +366,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         <div>
           <h2 className="text-xl sm:text-2xl font-bold text-slate-800">แผงควบคุมหลักระบบผู้ดูแลหลังบ้าน</h2>
-          <p className="text-xs sm:text-sm text-slate-500 mt-1.5">
-            โปรดระบุรหัสประจำตัวความปลอดภัยเพื่อสิทธิ์เข้าตรวจสอบ
-          </p>
         </div>
 
         {loginError && (
@@ -355,130 +450,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
       </div>
 
-      {/* Google Sheets Backend Connection Card */}
-      <div className="bg-gradient-to-br from-emerald-50/70 via-white to-blue-50/50 border-2 border-emerald-200/80 rounded-3xl p-6 sm:p-7 custom-shadow space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-4 border-b border-slate-200/70">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-emerald-600 text-white flex items-center justify-center text-xl shadow-md shadow-emerald-600/20 shrink-0">
-              📊
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-base sm:text-lg font-bold text-slate-800">
-                  เชื่อมต่อฐานข้อมูล Google Sheets & Google Apps Script
-                </h3>
-                {gasUrl ? (
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
-                    เชื่อมต่อแล้ว
-                  </span>
-                ) : (
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                    ข้อมูลจำลอง 15 จุด
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                ซิงค์ข้อมูล 15 จุดบริการ บันทึกการเติมของจิตอาสา และแบบประเมินความพึงพอใจเข้า Google Sheet แบบ Real-time
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleCopyScriptCode}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 border border-emerald-300 text-emerald-800 text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-            >
-              {isCopiedCode ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-              <span>{isCopiedCode ? 'คัดลอกโค้ดสำเร็จ!' : 'คัดลอกโค้ด Apps Script'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowCodeModal(!showCodeModal)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-            >
-              <FileSpreadsheet className="w-4 h-4" />
-              <span>{showCodeModal ? 'ซ่อนคำแนะนำ' : 'วิธีติดตั้งใน Sheet'}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Step Guide Modal / Expandable Box */}
-        {showCodeModal && (
-          <div className="p-5 bg-white border border-emerald-200 rounded-2xl space-y-3 animate-in fade-in text-xs sm:text-sm text-slate-700">
-            <div className="font-bold text-emerald-900 flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
-              <span>ขั้นตอนการผูกระบบกับ Google Sheets (ทำเพียงครั้งเดียว):</span>
-            </div>
-            <ol className="list-decimal list-inside space-y-1.5 text-slate-600 pl-2 leading-relaxed">
-              <li>เปิดไฟล์ <b>Google Sheets</b> เปล่าของท่าน</li>
-              <li>ไปที่เมนูด้านบน <b>ส่วนขยาย (Extensions) &gt; Apps Script</b></li>
-              <li>กดปุ่ม <b>"คัดลอกโค้ด Apps Script"</b> ด้านบน แล้วนำไปวางทับโค้ดเดิมทั้งหมด</li>
-              <li>กดปุ่ม <b>Deploy (การทำให้ใช้งานได้) &gt; การทำให้ใช้งานได้ใหม่ (New deployment)</b></li>
-              <li>เลือกประเภท: <b>เว็บแอป (Web app)</b>, ตั้งค่า <b>Who has access (ผู้มีสิทธิ์เข้าถึง)</b> เป็น <b>Anyone (ทุกคน)</b></li>
-              <li>กด <b>Deploy</b> แล้วคัดลอก <b>Web App URL (ลงท้ายด้วย /exec)</b> มาวางในช่องด้านล่าง แล้วกด "บันทึกและเชื่อมต่อ"</li>
-            </ol>
-          </div>
-        )}
-
-        {/* URL Input Form */}
-        <div className="space-y-2">
-          <label className="text-xs sm:text-sm font-bold text-slate-700 flex items-center justify-between">
-            <span>Google Apps Script Web App URL (ลงท้ายด้วย /exec):</span>
-            <span className="text-xs text-slate-400 font-mono">https://script.google.com/macros/s/.../exec</span>
-          </label>
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-            <input
-              type="url"
-              placeholder="วาง Web App URL ที่ได้จากการ Deploy ที่นี่ (https://script.google.com/macros/s/AKfycb.../exec)"
-              value={inputGasUrl}
-              onChange={(e) => setInputGasUrl(e.target.value)}
-              className="flex-1 bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-xs sm:text-sm text-slate-800 font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-            />
-
-            <button
-              type="button"
-              onClick={handleTestGasConnection}
-              disabled={isTestingGas || !inputGasUrl.trim()}
-              className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs sm:text-sm font-bold rounded-xl border border-slate-200 transition-colors disabled:opacity-50 cursor-pointer shrink-0 flex items-center justify-center gap-1.5"
-            >
-              {isTestingGas ? <RefreshCw className="w-4 h-4 animate-spin text-emerald-600" /> : <RefreshCw className="w-4 h-4" />}
-              <span>{isTestingGas ? 'กำลังทดสอบ...' : 'ทดสอบการเชื่อมต่อ'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSaveGasConnection}
-              disabled={isSavingGas}
-              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold rounded-xl shadow-xs transition-colors cursor-pointer shrink-0 flex items-center justify-center gap-1.5"
-            >
-              <Check className="w-4 h-4" />
-              <span>บันทึกและเชื่อมต่อ</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Test Result Message */}
-        {testResult && (
-          <div
-            className={`p-3.5 rounded-2xl border text-xs sm:text-sm flex items-center gap-2.5 font-bold ${
-              testResult.success
-                ? 'bg-emerald-100/90 border-emerald-300 text-emerald-900'
-                : 'bg-rose-50 border-rose-200 text-rose-800'
-            }`}
-          >
-            {testResult.success ? (
-              <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-700" />
-            ) : (
-              <AlertTriangle className="w-5 h-5 shrink-0 text-rose-600" />
-            )}
-            <span>{testResult.message}</span>
-          </div>
-        )}
-      </div>
-
       {/* 4 Executive KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Metric 1: Total Units */}
@@ -554,21 +525,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         <div className="bg-white border border-slate-200/90 rounded-3xl p-5 custom-shadow flex flex-col justify-between space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              รอบภารกิจจิตอาสา
+              จุดบริการทั้งหมดในระบบ
             </span>
             <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-lg font-bold">
-              🤝
+              📍
             </div>
           </div>
           <div>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl sm:text-4xl font-extrabold font-mono text-purple-700 tabular-nums">
-                {logs.length}
+                {locations.length}
               </span>
-              <span className="text-xs sm:text-sm font-bold text-slate-500">ครั้ง</span>
+              <span className="text-xs sm:text-sm font-bold text-slate-500">แห่ง</span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              ดูแลจุดบริการ {locations.length} แห่งทั่วมหาวิทยาลัย
+              พร้อมบริการ: {locations.filter(l => l.status === 'มีอยู่').length} | หมดแล้ว: {locations.filter(l => l.status === 'หมดแล้ว').length}
             </p>
           </div>
         </div>
@@ -602,7 +573,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 const percentage = Math.round((item.total / maxReplenished) * 100);
                 const shareOfTotal = Math.round(((item.total || 0) / (productTotals.total || 1)) * 100);
                 
-                // Top 3 badges
                 const rankColors = [
                   'bg-amber-500 text-white',
                   'bg-slate-400 text-white',
@@ -631,7 +601,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
                     </div>
 
-                    {/* Progress bar */}
                     <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200/80">
                       <div
                         className={`h-full rounded-full transition-all duration-700 ${
@@ -673,7 +642,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </div>
 
             <div className="space-y-3 pt-1">
-              {/* Size 49 */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs sm:text-sm font-semibold">
                   <span className="text-rose-600 font-bold flex items-center gap-1.5">
@@ -689,7 +657,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               </div>
 
-              {/* Size 52 */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs sm:text-sm font-semibold">
                   <span className="text-amber-600 font-bold flex items-center gap-1.5">
@@ -705,7 +672,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               </div>
 
-              {/* Size 54 */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs sm:text-sm font-semibold">
                   <span className="text-emerald-600 font-bold flex items-center gap-1.5">
@@ -721,7 +687,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               </div>
 
-              {/* Size 56 */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs sm:text-sm font-semibold">
                   <span className="text-blue-600 font-bold flex items-center gap-1.5">
@@ -737,7 +702,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               </div>
 
-              {/* Lubricant */}
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs sm:text-sm font-semibold">
                   <span className="text-indigo-600 font-bold flex items-center gap-1.5">
@@ -803,61 +767,198 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
       </div>
 
-      {/* Stock Status Grid of All Locations */}
-      <div className="bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-7 custom-shadow space-y-4">
-        <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
-          <div>
-            <h3 className="text-base sm:text-lg font-bold text-slate-800 flex items-center gap-2">
-              <span>🔍 ตรวจสอบสถานะสต็อกปัจจุบันแยกตามจุดบริการ ({locations.length} จุด)</span>
-            </h3>
-            <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-              แสดงรายชื่อตู้บริการทั้งหมดเพื่อตรวจสอบว่าจุดไหนถุงยางอนามัยหมดแบบ Real-time
-            </p>
+      {/* LOCATION MANAGEMENT SECTION (เพิ่ม / ลบ / แก้ไข จุดติดตั้งถุงยางอนามัย) */}
+      <div className="bg-white border-2 border-blue-500/30 rounded-3xl p-6 sm:p-7 custom-shadow space-y-6">
+        {/* Section Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+          <div className="flex items-start gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center text-2xl shadow-md shadow-blue-500/20 shrink-0">
+              📍
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h3 className="text-lg sm:text-xl font-black text-slate-800 tracking-tight">
+                  จัดการจุดติดตั้งตู้บริการถุงยางอนามัย
+                </h3>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 font-mono">
+                  {locations.length} จุด
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+                สามารถเพิ่มจุดบริการใหม่ แก้ไขข้อมูลพิกัด หรือลบจุดที่ไม่ใช้งานออกจากระบบได้ทันที
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {onResetDefaultLocations && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm('คุณต้องการรีเซ็ตรายชื่อจุดบริการกลับเป็น 15 จุดเริ่มต้นของ ม.อุบลฯ หรือไม่?')) {
+                    onResetDefaultLocations();
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                title="รีเซ็ตเป็น 15 จุดเริ่มต้น"
+              >
+                <RotateCcw className="w-4 h-4 text-slate-500" />
+                <span>รีเซ็ต 15 จุดเริ่มต้น</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={handleOpenAddModal}
+              className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-blue-600/20 transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>เพิ่มจุดติดตั้งใหม่</span>
+            </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
-          {locations.map((loc) => {
-            const isAvailable = loc.status === 'มีอยู่';
-            return (
-              <div
-                key={loc.id}
-                className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 custom-shadow ${
-                  isAvailable
-                    ? 'bg-emerald-50/40 border-emerald-100'
-                    : 'bg-rose-50/40 border-rose-100'
-                }`}
-              >
-                <div>
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-bold text-slate-800 line-clamp-2 leading-tight">{loc.name}</p>
-                    <span
-                      className={`px-3 py-1 rounded-full text-xs font-bold shrink-0 shadow-xs ${
-                        isAvailable ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white animate-pulse'
-                      }`}
-                    >
-                      {loc.status}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 font-mono mt-1.5">
-                    พิกัด: {loc.lat?.toFixed(4)}, {loc.lng?.toFixed(4)}
-                  </p>
-                </div>
+        {/* Filter & Search Bar */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="ค้นหาชื่อจุดติดตั้ง อาคาร คณะ หรือจุดสังเกต..."
+              value={locationSearch}
+              onChange={(e) => setLocationSearch(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white"
+            />
+          </div>
 
-                <button
-                  onClick={() => onToggleLocationStatus(loc.name, loc.status)}
-                  className={`w-full text-center text-xs font-bold py-2 rounded-xl transition-colors cursor-pointer ${
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-bold self-start sm:self-auto shrink-0">
+            <button
+              type="button"
+              onClick={() => setLocationFilter('all')}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                locationFilter === 'all' ? 'bg-blue-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              ทั้งหมด ({locations.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setLocationFilter('available')}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                locationFilter === 'available' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              มีอยู่ ({locations.filter(l => l.status === 'มีอยู่').length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setLocationFilter('empty')}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                locationFilter === 'empty' ? 'bg-rose-500 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              หมดแล้ว ({locations.filter(l => l.status === 'หมดแล้ว').length})
+            </button>
+          </div>
+        </div>
+
+        {/* Locations Grid Cards */}
+        {filteredLocationList.length === 0 ? (
+          <div className="p-10 text-center bg-slate-50 border border-slate-200 rounded-2xl text-slate-400 font-medium">
+            ไม่พบจุดติดตั้งที่ตรงกับเงื่อนไขการค้นหา
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredLocationList.map((loc) => {
+              const isAvailable = loc.status === 'มีอยู่';
+              return (
+                <div
+                  key={loc.id}
+                  className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 custom-shadow ${
                     isAvailable
-                      ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200'
-                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200'
+                      ? 'bg-emerald-50/30 border-emerald-200/80 hover:border-emerald-300'
+                      : 'bg-rose-50/30 border-rose-200/80 hover:border-rose-300'
                   }`}
                 >
-                  {isAvailable ? 'ปรับเป็น: หมดแล้ว ⚠️' : 'ปรับเป็น: มีอยู่แล้ว ✅'}
-                </button>
-              </div>
-            );
-          })}
-        </div>
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        {loc.zone && (
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md inline-block mb-1">
+                            {loc.zone}
+                          </span>
+                        )}
+                        <h4 className="text-sm font-bold text-slate-900 leading-snug line-clamp-2" title={loc.name}>
+                          {loc.name}
+                        </h4>
+                      </div>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-xs font-bold shrink-0 shadow-xs ${
+                          isAvailable ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white animate-pulse'
+                        }`}
+                      >
+                        {loc.status}
+                      </span>
+                    </div>
+
+                    {loc.landmark && (
+                      <p className="text-xs text-slate-500 line-clamp-2 pl-1 border-l-2 border-slate-200">
+                        {loc.landmark}
+                      </p>
+                    )}
+
+                    <div className="flex items-center justify-between text-xs text-slate-400 font-mono pt-1">
+                      <span>พิกัด: {loc.lat?.toFixed(5)}, {loc.lng?.toFixed(5)}</span>
+                      <a
+                        href={`https://www.google.com/maps?q=${loc.lat},${loc.lng}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
+                        title="เปิดดูตำแหน่งบน Google Maps"
+                      >
+                        <span>เปิด Map</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* Action Buttons: Toggle, Edit, Delete */}
+                  <div className="pt-2 border-t border-slate-200/70 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onToggleLocationStatus(loc.name, loc.status)}
+                      className={`flex-1 text-center text-xs font-bold py-2 rounded-xl transition-colors cursor-pointer ${
+                        isAvailable
+                          ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200'
+                          : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200'
+                      }`}
+                    >
+                      {isAvailable ? 'ปรับเป็น: หมดแล้ว ⚠️' : 'ปรับเป็น: มีอยู่แล้ว ✅'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditModal(loc)}
+                      className="p-2 bg-slate-100 hover:bg-blue-50 text-slate-600 hover:text-blue-600 border border-slate-200 rounded-xl transition-colors cursor-pointer"
+                      title="แก้ไขข้อมูลจุดนี้"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteClick(loc)}
+                      className="p-2 bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 rounded-xl transition-colors cursor-pointer"
+                      title="ลบจุดนี้ออกจากระบบ"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Volunteer Detailed Logs Table & Excel Export */}
@@ -977,6 +1078,184 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </table>
         </div>
       </div>
+
+      {/* MODAL: ADD / EDIT LOCATION */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl animate-in fade-in">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold">
+                  📍
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-800">
+                    {modalMode === 'add' ? 'เพิ่มจุดติดตั้งตู้บริการใหม่' : 'แก้ไขข้อมูลจุดติดตั้งตู้บริการ'}
+                  </h3>
+                  <p className="text-xs text-slate-500">ข้อมูลจะอัปเดตลงแผนที่และระบบทันที</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200/60 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleSaveLocation} className="p-6 space-y-4">
+              {formError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs font-bold text-rose-700 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
+
+              {/* Location Name */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">
+                  ชื่อจุดติดตั้ง / อาคาร <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="เช่น หน้าห้องสโมสรนักศึกษา คณะรัฐศาสตร์"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
+                />
+              </div>
+
+              {/* Zone / Faculty */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">โซน / คณะ</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    list="ubu-zones-list"
+                    placeholder="เลือกหรือพิมพ์ชื่อคณะ/โซน"
+                    value={formZone}
+                    onChange={(e) => setFormZone(e.target.value)}
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
+                  />
+                  <datalist id="ubu-zones-list">
+                    {UBU_ZONES.map((zone) => (
+                      <option key={zone} value={zone} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              {/* Landmark description */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">จุดสังเกต / ชั้น / รายละเอียดตำแหน่ง</label>
+                <input
+                  type="text"
+                  placeholder="เช่น ข้างห้องน้ำชาย ชั้น 1 ใกล้ตู้กดน้ำ"
+                  value={formLandmark}
+                  onChange={(e) => setFormLandmark(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white"
+                />
+              </div>
+
+              {/* Coordinates (Lat / Lng) with Auto GPS button */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700">
+                    พิกัดแผนที่ (Latitude / Longitude) <span className="text-rose-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGetDeviceGps}
+                    disabled={isLocatingGps}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                  >
+                    <Crosshair className={`w-3.5 h-3.5 ${isLocatingGps ? 'animate-spin' : ''}`} />
+                    <span>{isLocatingGps ? 'กำลังดึงพิกัด...' : '📍 ดึงพิกัด GPS ปัจจุบัน'}</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <span className="text-[11px] text-slate-400 font-mono">Lat:</span>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      placeholder="15.1190"
+                      value={formLat}
+                      onChange={(e) => setFormLat(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 font-mono focus:outline-none focus:border-blue-500 focus:bg-white"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 font-mono">Lng:</span>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      placeholder="104.9060"
+                      value={formLng}
+                      onChange={(e) => setFormLng(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-800 font-mono focus:outline-none focus:border-blue-500 focus:bg-white"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Status */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">สถานะเริ่มต้น</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setFormStatus('มีอยู่')}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      formStatus === 'มีอยู่'
+                        ? 'bg-emerald-500 text-white border-emerald-500 shadow-xs'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>✓ มีอยู่ (พร้อมบริการ)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormStatus('หมดแล้ว')}
+                    className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      formStatus === 'หมดแล้ว'
+                        ? 'bg-rose-500 text-white border-rose-500 shadow-xs'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>⚠️ หมดแล้ว (รอเติม)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Buttons */}
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs sm:text-sm font-semibold transition-colors cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-bold shadow-md shadow-blue-600/20 transition-all cursor-pointer"
+                >
+                  {modalMode === 'add' ? 'บันทึกจุดติดตั้งใหม่' : 'บันทึกการแก้ไข'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
