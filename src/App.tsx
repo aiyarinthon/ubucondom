@@ -1,0 +1,323 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { UbuHeader } from './components/UbuHeader';
+import { CampusMapView } from './components/CampusMapView';
+import { VolunteerPortal } from './components/VolunteerPortal';
+import { AdminPortal } from './components/AdminPortal';
+import { GasUrlModal } from './components/GasUrlModal';
+import { UbuLocation, VolunteerLog, VolunteerFormData } from './types/ubuCondom';
+import { 
+  INITIAL_UBU_LOCATIONS, 
+  INITIAL_VOLUNTEER_LOGS, 
+  INITIAL_RATINGS 
+} from './data/ubuData';
+import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<'user' | 'volunteer' | 'admin' | 'config'>('user');
+  
+  // GAS Web App URL
+  const [gasUrl, setGasUrl] = useState<string>(() => {
+    return localStorage.getItem('ubu_gas_url') || '';
+  });
+
+  // State for UBU Condom Application
+  const [locations, setLocations] = useState<UbuLocation[]>(INITIAL_UBU_LOCATIONS);
+  const [volunteerLogs, setVolunteerLogs] = useState<VolunteerLog[]>(INITIAL_VOLUNTEER_LOGS);
+  const [ratings, setRatings] = useState<number[]>(INITIAL_RATINGS);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Modal
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+
+  // Toast Notification
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(prev => (prev?.message === message ? null : prev));
+    }, 4000);
+  };
+
+  // Fetch data from real Google Apps Script if URL provided
+  const handleFetchFromGas = useCallback(async (targetUrl = gasUrl) => {
+    if (!targetUrl || !targetUrl.trim()) return;
+
+    setIsLoading(true);
+    try {
+      // 1. Fetch Locations
+      const locProxyUrl = `/api/gas-proxy?url=${encodeURIComponent(targetUrl.trim() + '?action=getLocations')}`;
+      const locRes = await fetch(locProxyUrl);
+      if (locRes.ok) {
+        const locData = await locRes.json();
+        const list = Array.isArray(locData) ? locData : (locData.data || locData.locations || []);
+        if (list.length > 0) {
+          setLocations(list.map((item: any, idx: number) => ({
+            id: item.id || idx + 1,
+            name: item.name,
+            status: item.status || 'มีอยู่',
+            lat: Number(item.lat) || 15.1190,
+            lng: Number(item.lng) || 104.9030,
+            landmark: item.landmark,
+          })));
+        }
+      }
+
+      // 2. Fetch Admin Data (Volunteer logs & Surveys)
+      const adminProxyUrl = `/api/gas-proxy?url=${encodeURIComponent(targetUrl.trim() + '?action=getAdminData')}`;
+      const adminRes = await fetch(adminProxyUrl);
+      if (adminRes.ok) {
+        const adminData = await adminRes.json();
+        const payload = adminData.data || adminData;
+        if (payload.logs && Array.isArray(payload.logs)) {
+          setVolunteerLogs(payload.logs);
+        }
+        if (payload.ratings && Array.isArray(payload.ratings)) {
+          setRatings(payload.ratings);
+        }
+      }
+
+      showToast('ซิงค์ข้อมูลล่าสุดจาก Google Sheets สำเร็จ!', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'ไม่สามารถดึงข้อมูลจาก Google Apps Script ได้', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [gasUrl]);
+
+  // Initial load
+  useEffect(() => {
+    if (gasUrl) {
+      handleFetchFromGas(gasUrl);
+    }
+  }, []);
+
+  // Save GAS URL
+  const handleSaveGasUrl = async (newUrl: string) => {
+    setGasUrl(newUrl);
+    localStorage.setItem('ubu_gas_url', newUrl);
+    if (newUrl) {
+      await handleFetchFromGas(newUrl);
+    } else {
+      setLocations(INITIAL_UBU_LOCATIONS);
+      setVolunteerLogs(INITIAL_VOLUNTEER_LOGS);
+      setRatings(INITIAL_RATINGS);
+      showToast('สลับกลับมาใช้ชุดข้อมูลจำลอง ม.อุบลฯ', 'info');
+    }
+  };
+
+  // 1. Report Condom Out (User)
+  const handleReportEmpty = async (locationName: string) => {
+    // Optimistic Update
+    setLocations(prev => prev.map(loc => loc.name === locationName ? { ...loc, status: 'หมดแล้ว' } : loc));
+
+    if (gasUrl) {
+      try {
+        const response = await fetch('/api/gas-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _targetUrl: gasUrl,
+            action: 'reportOut',
+            locationName,
+          }),
+        });
+        const resJson = await response.json();
+        showToast(resJson.message || 'บันทึกการแจ้งถุงยางอนามัยหมดเรียบร้อยแล้ว', 'success');
+      } catch (err: any) {
+        showToast('แจ้งเตือนสถานะสำเร็จ (โหมดออฟไลน์)', 'info');
+      }
+    } else {
+      showToast(`ระบบได้รับข้อมูลการแจ้ง 'ถุงยางอนามัยหมด' ณ จุด ${locationName} แล้ว ขอบคุณครับ!`, 'success');
+    }
+  };
+
+  // 2. Submit Survey (User)
+  const handleSubmitSurvey = async (rating: number, feedback: string) => {
+    setRatings(prev => [...prev, rating]);
+
+    if (gasUrl) {
+      try {
+        await fetch('/api/gas-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _targetUrl: gasUrl,
+            action: 'submitSurvey',
+            rating,
+            feedback,
+          }),
+        });
+      } catch {
+        // demo fallback
+      }
+    }
+    showToast('บันทึกแบบประเมินเรียบร้อยแล้ว ขอบคุณสำหรับความคิดเห็นครับ', 'success');
+  };
+
+  // 3. Submit Volunteer Replenishment (Volunteer)
+  const handleSubmitVolunteer = async (
+    formData: VolunteerFormData,
+    photoBase64?: string,
+    fileName?: string,
+    mimeType?: string
+  ) => {
+    // 1. Mark location back to "มีอยู่"
+    setLocations(prev => prev.map(loc => loc.name === formData.location ? { ...loc, status: 'มีอยู่' } : loc));
+
+    // 2. Append to logs
+    const newLog: VolunteerLog = {
+      id: 'vol-' + Date.now(),
+      date: new Date().toISOString().replace('T', ' ').slice(0, 16),
+      name: formData.name,
+      year: formData.year,
+      faculty: formData.faculty,
+      studentId: formData.studentId,
+      location: formData.location,
+      lubricant: formData.lubricant,
+      size49: formData.size49,
+      size52: formData.size52,
+      size54: formData.size54,
+      size56: formData.size56,
+      comment: formData.comment || '-',
+      imageUrl: photoBase64 ? 'data:' + mimeType + ';base64,' + photoBase64 : '',
+    };
+
+    setVolunteerLogs(prev => [newLog, ...prev]);
+
+    if (gasUrl) {
+      try {
+        const response = await fetch('/api/gas-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            _targetUrl: gasUrl,
+            action: 'submitVolunteer',
+            formData: {
+              ...formData,
+              fileData: photoBase64 ? { base64: photoBase64, fileName, mimeType } : undefined,
+            },
+          }),
+        });
+        const resJson = await response.json();
+        showToast(resJson.message || 'บันทึกข้อมูลจิตอาสาสำเร็จ!', 'success');
+      } catch (err: any) {
+        showToast('บันทึกข้อมูลจิตอาสาสำเร็จแล้ว (โหมด Demo)', 'success');
+      }
+    } else {
+      showToast('บันทึกข้อมูลและอัปเดตสถานะจุดบริการเป็น "มีอยู่" สำเร็จ!', 'success');
+    }
+  };
+
+  // 4. Admin manual toggle status
+  const handleToggleLocationStatus = async (locationName: string, currentStatus: string) => {
+    const nextStatus = currentStatus === 'มีอยู่' ? 'หมดแล้ว' : 'มีอยู่';
+    setLocations(prev => prev.map(loc => loc.name === locationName ? { ...loc, status: nextStatus } : loc));
+
+    if (nextStatus === 'หมดแล้ว') {
+      await handleReportEmpty(locationName);
+    } else {
+      showToast(`ปรับสถานะจุด "${locationName}" เป็น "${nextStatus}" เรียบร้อยแล้ว`, 'success');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 text-slate-800 flex flex-col font-sans p-4 sm:p-6 lg:p-8">
+      <div className="max-w-7xl w-full mx-auto space-y-6 flex-1 flex flex-col">
+        {/* Header */}
+        <UbuHeader
+          activeTab={activeTab}
+          setActiveTab={(tab) => {
+            if (tab === 'config') {
+              setIsConfigModalOpen(true);
+            } else {
+              setActiveTab(tab);
+            }
+          }}
+          locations={locations}
+          isLiveGAS={Boolean(gasUrl)}
+          isLoading={isLoading}
+          onRefresh={() => {
+            if (gasUrl) {
+              handleFetchFromGas(gasUrl);
+            } else {
+              showToast('อยู่ในโหมดข้อมูลจำลอง ม.อุบลฯ', 'info');
+            }
+          }}
+          onOpenConfig={() => setIsConfigModalOpen(true)}
+        />
+
+        {/* View Content */}
+        <main className="flex-1">
+          {activeTab === 'user' && (
+            <CampusMapView
+              locations={locations}
+              onReportEmpty={handleReportEmpty}
+              onSubmitSurvey={handleSubmitSurvey}
+              isLoading={isLoading}
+            />
+          )}
+
+          {activeTab === 'volunteer' && (
+            <VolunteerPortal
+              locations={locations}
+              onSubmitVolunteer={handleSubmitVolunteer}
+              isLoading={isLoading}
+            />
+          )}
+
+          {activeTab === 'admin' && (
+            <AdminPortal
+              locations={locations}
+              logs={volunteerLogs}
+              ratings={ratings}
+              onToggleLocationStatus={handleToggleLocationStatus}
+              onRefreshData={() => handleFetchFromGas(gasUrl)}
+              isLoading={isLoading}
+              gasUrl={gasUrl}
+              onSaveGasUrl={handleSaveGasUrl}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* GAS Web App URL Config Modal */}
+      <GasUrlModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        gasUrl={gasUrl}
+        onSaveUrl={handleSaveGasUrl}
+        isLoading={isLoading}
+      />
+
+      {/* Floating Toast Notification */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-5">
+          <div className={`flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-xl border text-sm font-bold backdrop-blur-md ${
+            toast.type === 'success'
+              ? 'bg-emerald-600 text-white border-emerald-500 shadow-emerald-500/20'
+              : toast.type === 'error'
+              ? 'bg-rose-600 text-white border-rose-500 shadow-rose-500/20'
+              : 'bg-slate-900 text-white border-slate-800 shadow-slate-900/20'
+          }`}>
+            {toast.type === 'success' && <CheckCircle2 className="w-5 h-5 text-white shrink-0" />}
+            {toast.type === 'error' && <AlertCircle className="w-5 h-5 text-white shrink-0" />}
+            {toast.type === 'info' && <Info className="w-5 h-5 text-blue-300 shrink-0" />}
+            <span>{toast.message}</span>
+            <button
+              onClick={() => setToast(null)}
+              className="ml-2 text-white/80 hover:text-white cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

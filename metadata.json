@@ -1,0 +1,6 @@
+{
+  "name": "UBU Condom - ระบบจัดการจุดบริการถุงยางอนามัย",
+  "description": "ระบบแผนที่จุดบริการถุงยางอนามัย มหาวิทยาลัยอุบลราชธานี ฟอร์มบันทึกการเติมสต็อกสำหรับจิตอาสา และแดชบอร์ดสถิติผู้ดูแลระบบ เชื่อมต่อ Google Apps Script & Google Sheets",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
