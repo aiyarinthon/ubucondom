@@ -52,7 +52,7 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-500 font-medium hidden sm:block">
-                ระบบจัดการจุดบริการถุงยางอนามัยฟรี มหาวิทยาลัยอุบลราชธานี
+                คลินิกวัยรุ่น โรงพยาบาลมหาวิทยาลัยอุบลราชธานี
               </p>
             </div>
           </div>
