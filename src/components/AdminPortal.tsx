@@ -28,7 +28,7 @@ import {
   Check
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { UbuLocation, VolunteerLog } from '../types/ubuCondom';
+import { UbuLocation, VolunteerLog, SurveyRecord } from '../types/ubuCondom';
 
 // คณะและหน่วยงานหลักในมหาวิทยาลัยอุบลราชธานี
 const UBU_ZONES = [
@@ -52,6 +52,7 @@ interface AdminPortalProps {
   locations: UbuLocation[];
   logs: VolunteerLog[];
   ratings: number[];
+  surveys?: SurveyRecord[];
   onToggleLocationStatus: (locationName: string, currentStatus: string) => Promise<void>;
   onAddLocation?: (location: Omit<UbuLocation, 'id'>) => void;
   onEditLocation?: (id: string | number, updated: Partial<UbuLocation>) => void;
@@ -60,6 +61,9 @@ interface AdminPortalProps {
   onDeleteVolunteerLog?: (id: string) => void;
   onClearAllVolunteerLogs?: () => void;
   onRestoreDefaultVolunteerLogs?: () => void;
+  onDeleteSurvey?: (id: string) => void;
+  onClearAllSurveys?: () => void;
+  onRestoreDefaultSurveys?: () => void;
   onRefreshData: () => Promise<void>;
   isLoading?: boolean;
 }
@@ -68,6 +72,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   locations,
   logs,
   ratings,
+  surveys = [],
   onToggleLocationStatus,
   onAddLocation,
   onEditLocation,
@@ -76,6 +81,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onDeleteVolunteerLog,
   onClearAllVolunteerLogs,
   onRestoreDefaultVolunteerLogs,
+  onDeleteSurvey,
+  onClearAllSurveys,
+  onRestoreDefaultSurveys,
   onRefreshData,
   isLoading,
 }) => {
@@ -357,6 +365,46 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Volunteer Logs');
     XLSX.writeFile(workbook, `UBU_Condom_Volunteer_Report.xlsx`);
+  };
+
+  // Survey Table Filters
+  const [surveySearch, setSurveySearch] = useState('');
+  const [surveyStarFilter, setSurveyStarFilter] = useState<'all' | number>('all');
+
+  const filteredSurveys = useMemo(() => {
+    return surveys.filter(s => {
+      const query = surveySearch.toLowerCase().trim();
+      const matchText = !query || 
+        s.feedback.toLowerCase().includes(query) || 
+        s.date.toLowerCase().includes(query);
+
+      const matchStar = surveyStarFilter === 'all' || s.rating === surveyStarFilter;
+      return matchText && matchStar;
+    });
+  }, [surveys, surveySearch, surveyStarFilter]);
+
+  // Export Survey Records to Excel (.xlsx)
+  const handleExportSurveyExcel = () => {
+    if (filteredSurveys.length === 0) {
+      alert('ไม่มีข้อมูลประเมินความพึงพอใจให้ออกรายงานในขณะนี้');
+      return;
+    }
+
+    const rows = filteredSurveys.map((s, idx) => {
+      const levelLabel = s.rating === 5 ? 'ดีมากที่สุด' : s.rating === 4 ? 'ดีมาก' : s.rating === 3 ? 'ปานกลาง' : s.rating === 2 ? 'พอใช้' : 'ควรปรับปรุง';
+      return {
+        'ลำดับ': idx + 1,
+        'วัน-เวลาที่ประเมิน': s.date,
+        'คะแนนดาว': `${s.rating} ดาว`,
+        'ระดับความพึงพอใจ': levelLabel,
+        'ข้อคิดเห็น / ข้อเสนอแนะของผู้รับบริการ': s.feedback || '-',
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Survey Feedback');
+    XLSX.writeFile(workbook, `UBU_Condom_Satisfaction_Survey_Report.xlsx`);
   };
 
   const handlePrintReport = () => {
@@ -1120,6 +1168,168 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </td>
                   </tr>
                 ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* SATISFACTION SURVEY RECORDS & COMMENTS SECTION */}
+      <div className="bg-white border-2 border-amber-400/30 rounded-3xl p-6 sm:p-7 custom-shadow space-y-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+          <div>
+            <div className="flex items-center gap-2.5">
+              <h3 className="text-base sm:text-lg font-bold text-slate-800">
+                ⭐ รายงานผลการประเมินความพึงพอใจและข้อคิดเห็นผู้รับบริการ ({surveys.length} รายการ)
+              </h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                CSAT {averageRating} / 5.0
+              </span>
+            </div>
+            <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+              เข้าถึงข้อมูลคะแนนดาวและข้อ comment จากผู้รับบริการตู้ถุงยางอนามัยฟรี ม.อุบลฯ พร้อมส่งออกรายงานไฟล์ Excel (.xlsx)
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {onRestoreDefaultSurveys && (
+              <button
+                type="button"
+                onClick={onRestoreDefaultSurveys}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                title="คืนค่าข้อมูลการประเมินเริ่มต้น"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-600" />
+                <span>คืนค่าประวัติเริ่มต้น</span>
+              </button>
+            )}
+
+            {onClearAllSurveys && surveys.length > 0 && (
+              <button
+                type="button"
+                onClick={onClearAllSurveys}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                title="ลบข้อมูลการประเมินทั้งหมด"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                <span>ล้างประวัติทั้งหมด</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={handleExportSurveyExcel}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
+            >
+              <Download className="w-4 h-4" />
+              <span>ส่งออก Excel (.xlsx)</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Search and Star Filter Bar */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="ค้นหาตามข้อความความคิดเห็น หรือ วัน-เวลา..."
+              value={surveySearch}
+              onChange={(e) => setSurveySearch(e.target.value)}
+              className="w-full bg-white border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-amber-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 text-xs font-bold overflow-x-auto shrink-0">
+            <button
+              type="button"
+              onClick={() => setSurveyStarFilter('all')}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                surveyStarFilter === 'all' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              ทั้งหมด ({surveys.length})
+            </button>
+            {[5, 4, 3, 2, 1].map((star) => (
+              <button
+                key={star}
+                type="button"
+                onClick={() => setSurveyStarFilter(star)}
+                className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1 transition-colors cursor-pointer ${
+                  surveyStarFilter === star ? 'bg-amber-500 text-white font-bold' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>{star}</span>
+                <Star className="w-3 h-3 fill-current" />
+                <span className="text-[11px] font-normal">({surveys.filter(s => s.rating === star).length})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Table View */}
+        <div className="overflow-x-auto border border-slate-100 rounded-2xl shadow-xs">
+          <table className="w-full text-left text-xs sm:text-sm border-collapse">
+            <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-100">
+              <tr>
+                <th className="p-4 whitespace-nowrap w-44">วัน-เวลาประเมิน</th>
+                <th className="p-4 whitespace-nowrap w-48 text-center">คะแนนความพึงพอใจ</th>
+                <th className="p-4 whitespace-nowrap">ข้อคิดเห็น / ข้อเสนอแนะจากผู้รับบริการ</th>
+                <th className="p-4 text-center whitespace-nowrap w-20">จัดการ</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
+              {filteredSurveys.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="py-10 text-center text-slate-400 font-medium">
+                    ไม่พบข้อมูลการประเมินความพึงพอใจตามเงื่อนไขที่ค้นหา
+                  </td>
+                </tr>
+              ) : (
+                filteredSurveys.map((survey, idx) => {
+                  const stars = '★'.repeat(survey.rating) + '☆'.repeat(5 - survey.rating);
+                  const levelText = survey.rating === 5 ? 'ดีมากที่สุด' : survey.rating === 4 ? 'ดีมาก' : survey.rating === 3 ? 'ปานกลาง' : survey.rating === 2 ? 'พอใช้' : 'ควรปรับปรุง';
+                  return (
+                    <tr key={survey.id || idx} className="hover:bg-amber-50/30 transition-colors">
+                      <td className="p-4 font-mono text-xs text-slate-500 whitespace-nowrap">
+                        {survey.date}
+                      </td>
+                      <td className="p-4 text-center whitespace-nowrap">
+                        <div className="inline-flex flex-col items-center">
+                          <span className="text-amber-500 font-mono text-sm tracking-wider">{stars}</span>
+                          <span className="text-[11px] font-bold text-slate-700">
+                            {survey.rating}.0 ดาว ({levelText})
+                          </span>
+                        </div>
+                      </td>
+                      <td className="p-4 text-slate-800 leading-relaxed font-normal">
+                        {survey.feedback ? (
+                          <div className="bg-slate-50 border border-slate-200/80 p-3 rounded-xl text-xs sm:text-sm italic text-slate-700">
+                            "{survey.feedback}"
+                          </div>
+                        ) : (
+                          <span className="text-slate-300 italic font-mono">- ไม่ได้ระบุข้อความ -</span>
+                        )}
+                      </td>
+                      <td className="p-4 text-center whitespace-nowrap">
+                        {onDeleteSurvey && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm('คุณต้องการลบรายการผลประเมินนี้ใช่หรือไม่?')) {
+                                if (survey.id) onDeleteSurvey(survey.id);
+                              }
+                            }}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                            title="ลบผลประเมินนี้"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

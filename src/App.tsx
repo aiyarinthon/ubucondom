@@ -13,8 +13,10 @@ import { UbuLocation, VolunteerLog, VolunteerFormData } from './types/ubuCondom'
 import { 
   INITIAL_UBU_LOCATIONS, 
   INITIAL_VOLUNTEER_LOGS, 
-  INITIAL_RATINGS 
+  INITIAL_RATINGS,
+  INITIAL_SURVEY_RECORDS 
 } from './data/ubuData';
+import { SurveyRecord } from './types/ubuCondom';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 export default function App() {
@@ -55,7 +57,27 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('ubu_volunteer_logs', JSON.stringify(volunteerLogs));
   }, [volunteerLogs]);
-  const [ratings, setRatings] = useState<number[]>(INITIAL_RATINGS);
+
+  // Survey Records State with localStorage persistence
+  const [surveys, setSurveys] = useState<SurveyRecord[]>(() => {
+    const saved = localStorage.getItem('ubu_surveys_data');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return INITIAL_SURVEY_RECORDS;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('ubu_surveys_data', JSON.stringify(surveys));
+  }, [surveys]);
+
+  const [ratings, setRatings] = useState<number[]>(() => {
+    if (surveys.length > 0) return surveys.map(s => s.rating);
+    return INITIAL_RATINGS;
+  });
   const [isLoading, setIsLoading] = useState(false);
 
   // Modal
@@ -170,6 +192,14 @@ export default function App() {
 
   // 2. Submit Survey (User)
   const handleSubmitSurvey = async (rating: number, feedback: string) => {
+    const newSurvey: SurveyRecord = {
+      id: 'sur-' + Date.now(),
+      date: new Date().toISOString().replace('T', ' ').slice(0, 16),
+      rating,
+      feedback: feedback.trim(),
+    };
+
+    setSurveys(prev => [newSurvey, ...prev]);
     setRatings(prev => [...prev, rating]);
 
     if (gasUrl) {
@@ -320,6 +350,37 @@ export default function App() {
     }
   };
 
+  // 12. Admin Delete Single Survey Record
+  const handleDeleteSurvey = (id: string) => {
+    setSurveys(prev => {
+      const updated = prev.filter(s => s.id !== id);
+      localStorage.setItem('ubu_surveys_data', JSON.stringify(updated));
+      setRatings(updated.map(s => s.rating));
+      return updated;
+    });
+    showToast('ลบรายการผลประเมินเรียบร้อยแล้ว', 'info');
+  };
+
+  // 13. Admin Clear All Surveys
+  const handleClearAllSurveys = () => {
+    if (window.confirm('คุณต้องการลบข้อมูลประเมินความพึงพอใจและข้อคิดเห็น "ทั้งหมด" ใช่หรือไม่?')) {
+      setSurveys([]);
+      setRatings([]);
+      localStorage.setItem('ubu_surveys_data', JSON.stringify([]));
+      showToast('ลบข้อมูลการประเมินทั้งหมดเรียบร้อยแล้ว', 'info');
+    }
+  };
+
+  // 14. Admin Restore Default Surveys
+  const handleRestoreDefaultSurveys = () => {
+    if (window.confirm('คุณต้องการคืนค่าข้อมูลประเมินกลับเป็น "ชุดข้อมูลเริ่มต้น" ใช่หรือไม่?')) {
+      setSurveys(INITIAL_SURVEY_RECORDS);
+      setRatings(INITIAL_SURVEY_RECORDS.map(s => s.rating));
+      localStorage.setItem('ubu_surveys_data', JSON.stringify(INITIAL_SURVEY_RECORDS));
+      showToast('คืนค่าข้อมูลแบบประเมินเริ่มต้นเรียบร้อยแล้ว', 'success');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 text-slate-800 flex flex-col font-sans p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl w-full mx-auto space-y-6 flex-1 flex flex-col">
@@ -370,6 +431,7 @@ export default function App() {
               locations={locations}
               logs={volunteerLogs}
               ratings={ratings}
+              surveys={surveys}
               onToggleLocationStatus={handleToggleLocationStatus}
               onAddLocation={handleAddLocation}
               onEditLocation={handleEditLocation}
@@ -378,6 +440,9 @@ export default function App() {
               onDeleteVolunteerLog={handleDeleteVolunteerLog}
               onClearAllVolunteerLogs={handleClearAllVolunteerLogs}
               onRestoreDefaultVolunteerLogs={handleRestoreDefaultVolunteerLogs}
+              onDeleteSurvey={handleDeleteSurvey}
+              onClearAllSurveys={handleClearAllSurveys}
+              onRestoreDefaultSurveys={handleRestoreDefaultSurveys}
               onRefreshData={() => handleFetchFromGas(gasUrl)}
               isLoading={isLoading}
             />
