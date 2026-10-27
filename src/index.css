@@ -2,10 +2,19 @@
 
 @layer base {
   body {
-    font-family: 'Prompt', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    font-family: 'Sarabun', 'Prompt', 'Kanit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     background-color: #f8fafc;
     color: #1e293b;
-    font-size: 15px;
+    font-size: 15.5px;
+    line-height: 1.6;
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Sarabun', 'Kanit', 'Prompt', sans-serif;
+    letter-spacing: -0.015em;
   }
   
   code, pre, .font-mono {
@@ -34,7 +43,7 @@
 
 /* Leaflet Map custom styles for white background */
 .leaflet-container {
-  font-family: 'Prompt', sans-serif !important;
+  font-family: 'Sarabun', 'Prompt', sans-serif !important;
 }
 
 /* Google Maps style InfoWindow Popup */

@@ -41,7 +41,20 @@ export default function App() {
     localStorage.setItem('ubu_locations_data', JSON.stringify(locations));
   }, [locations]);
 
-  const [volunteerLogs, setVolunteerLogs] = useState<VolunteerLog[]>(INITIAL_VOLUNTEER_LOGS);
+  const [volunteerLogs, setVolunteerLogs] = useState<VolunteerLog[]>(() => {
+    const saved = localStorage.getItem('ubu_volunteer_logs');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+    return INITIAL_VOLUNTEER_LOGS;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('ubu_volunteer_logs', JSON.stringify(volunteerLogs));
+  }, [volunteerLogs]);
   const [ratings, setRatings] = useState<number[]>(INITIAL_RATINGS);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -279,6 +292,34 @@ export default function App() {
     showToast('คืนค่าจุดติดตั้งกลับเป็น 15 จุดเริ่มต้นของ ม.อุบลฯ เรียบร้อยแล้ว', 'info');
   };
 
+  // 9. Admin Delete Single Volunteer Log
+  const handleDeleteVolunteerLog = (id: string) => {
+    setVolunteerLogs(prev => {
+      const updated = prev.filter(log => log.id !== id);
+      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
+      return updated;
+    });
+    showToast('ลบรายการประวัติการเติมเรียบร้อยแล้ว', 'info');
+  };
+
+  // 10. Admin Clear All Volunteer Logs
+  const handleClearAllVolunteerLogs = () => {
+    if (window.confirm('คุณต้องการลบประวัติการเติมของจิตอาสา "ทั้งหมด" ใช่หรือไม่?')) {
+      setVolunteerLogs([]);
+      localStorage.setItem('ubu_volunteer_logs', JSON.stringify([]));
+      showToast('ลบประวัติการเติมทั้งหมดเรียบร้อยแล้ว', 'info');
+    }
+  };
+
+  // 11. Admin Restore Default Volunteer Logs
+  const handleRestoreDefaultVolunteerLogs = () => {
+    if (window.confirm('คุณต้องการคืนค่าประวัติการเติมกลับเป็น "ชุดข้อมูลเริ่มต้น" ใช่หรือไม่?')) {
+      setVolunteerLogs(INITIAL_VOLUNTEER_LOGS);
+      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(INITIAL_VOLUNTEER_LOGS));
+      showToast('คืนค่าประวัติการเติมเริ่มต้นเรียบร้อยแล้ว', 'success');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 text-slate-800 flex flex-col font-sans p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl w-full mx-auto space-y-6 flex-1 flex flex-col">
@@ -334,6 +375,9 @@ export default function App() {
               onEditLocation={handleEditLocation}
               onDeleteLocation={handleDeleteLocation}
               onResetDefaultLocations={handleResetDefaultLocations}
+              onDeleteVolunteerLog={handleDeleteVolunteerLog}
+              onClearAllVolunteerLogs={handleClearAllVolunteerLogs}
+              onRestoreDefaultVolunteerLogs={handleRestoreDefaultVolunteerLogs}
               onRefreshData={() => handleFetchFromGas(gasUrl)}
               isLoading={isLoading}
             />

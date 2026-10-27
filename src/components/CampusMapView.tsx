@@ -778,7 +778,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
                   ) : (
                     <>
                       <Send className="w-4 h-4" />
-                      <span>ส่งข้อมูลสถิติ</span>
+                      <span>ส่งข้อมูล</span>
                     </>
                   )}
                 </button>

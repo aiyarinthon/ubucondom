@@ -7,7 +7,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   Sparkles,
-  ChevronDown
+  ChevronDown,
+  ExternalLink
 } from 'lucide-react';
 import { UbuLocation } from '../types/ubuCondom';
 
@@ -190,21 +191,37 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
           </div>
         </div>
 
-        {/* Service Highlight */}
-        <div className="bg-white border border-slate-200/90 p-5 sm:p-6 rounded-3xl custom-shadow flex items-center justify-between">
-          <div>
-            <p className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider">
-              บริการสวัสดิการด่วน
-            </p>
-            <p className="text-sm sm:text-base font-bold text-blue-600 mt-1">
-              สแกน รับ ปลอดภัย 24 ชม. 💖
-            </p>
-            <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-              ไซส์ 49, 52, 54, 56 และเจลหล่อลื่น
-            </p>
+        {/* Service Highlight: คลินิกวัยรุ่น รพ.ม.อุบลฯ */}
+        <div className="bg-gradient-to-br from-blue-50/80 via-white to-emerald-50/80 border border-blue-200/90 p-5 sm:p-6 rounded-3xl custom-shadow flex flex-col justify-between space-y-2.5">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <p className="text-xs font-bold text-blue-800 uppercase tracking-wider">
+                  บริการคลินิกวัยรุ่น รพ.ม.อุบลฯ
+                </p>
+              </div>
+              <p className="text-xs sm:text-sm font-bold text-slate-800 mt-1">
+                • ตรวจคัดกรองและให้คำปรึกษาโรคติดต่อทางเพศสัมพันธ์ <span className="text-emerald-600 font-black bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-200">ฟรี</span>
+              </p>
+            </div>
+            <div className="w-10 h-10 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-xl text-emerald-600 shrink-0">
+              🏥
+            </div>
           </div>
-          <div className="w-13 h-13 rounded-2xl bg-pink-50 border border-pink-100 flex items-center justify-center text-2xl text-pink-500">
-            ❤️
+
+          <div className="pt-2 border-t border-slate-200/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="text-slate-600 font-semibold">ปรึกษาแบบออนไลน์ แอดไลน์เลย:</span>
+            <a
+              href="https://line.me/R/ti/p/%40176joubz"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#06C755] hover:bg-[#05b34c] text-white font-bold rounded-xl shadow-xs transition-all cursor-pointer no-underline shrink-0"
+              title="กดเพื่อเพิ่มเพื่อนใน LINE"
+            >
+              <span>💬 @176joubz</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
           </div>
         </div>
       </div>
