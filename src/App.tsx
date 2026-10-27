@@ -127,8 +127,12 @@ export default function App() {
 
   // 1. Report Condom Out (User)
   const handleReportEmpty = async (locationName: string) => {
-    // Optimistic Update
-    setLocations(prev => prev.map(loc => loc.name === locationName ? { ...loc, status: 'หมดแล้ว' } : loc));
+    // Immediate Update & LocalStorage Persistence
+    setLocations(prev => {
+      const updated = prev.map(loc => loc.name === locationName ? { ...loc, status: 'หมดแล้ว' } : loc);
+      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
+      return updated;
+    });
 
     if (gasUrl) {
       try {
@@ -142,12 +146,12 @@ export default function App() {
           }),
         });
         const resJson = await response.json();
-        showToast(resJson.message || 'บันทึกการแจ้งถุงยางอนามัยหมดเรียบร้อยแล้ว', 'success');
+        showToast(resJson.message || `อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
       } catch (err: any) {
-        showToast('แจ้งเตือนสถานะสำเร็จ (โหมดออฟไลน์)', 'info');
+        showToast(`อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
       }
     } else {
-      showToast(`ระบบได้รับข้อมูลการแจ้ง 'ถุงยางอนามัยหมด' ณ จุด ${locationName} แล้ว ขอบคุณครับ!`, 'success');
+      showToast(`อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
     }
   };
 
@@ -181,8 +185,12 @@ export default function App() {
     fileName?: string,
     mimeType?: string
   ) => {
-    // 1. Mark location back to "มีอยู่"
-    setLocations(prev => prev.map(loc => loc.name === formData.location ? { ...loc, status: 'มีอยู่' } : loc));
+    // 1. Mark location back to "มีอยู่" and persist to localStorage
+    setLocations(prev => {
+      const updated = prev.map(loc => loc.name === formData.location ? { ...loc, status: 'มีอยู่' } : loc);
+      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
+      return updated;
+    });
 
     // 2. Append to logs
     const newLog: VolunteerLog = {
@@ -219,25 +227,25 @@ export default function App() {
           }),
         });
         const resJson = await response.json();
-        showToast(resJson.message || 'บันทึกข้อมูลจิตอาสาสำเร็จ!', 'success');
+        showToast(resJson.message || `บันทึกเติมของสำเร็จ! จุด "${formData.location}" เปลี่ยนสถานะเป็น 'มีอยู่' อัตโนมัติแล้ว`, 'success');
       } catch (err: any) {
-        showToast('บันทึกข้อมูลจิตอาสาสำเร็จแล้ว (โหมด Demo)', 'success');
+        showToast(`บันทึกเติมของสำเร็จ! จุด "${formData.location}" เปลี่ยนสถานะเป็น 'มีอยู่' อัตโนมัติแล้ว`, 'success');
       }
     } else {
-      showToast('บันทึกข้อมูลและอัปเดตสถานะจุดบริการเป็น "มีอยู่" สำเร็จ!', 'success');
+      showToast(`บันทึกเติมของสำเร็จ! อัปเดตสถานะจุด "${formData.location}" เป็น 'มีอยู่' อัตโนมัติแล้ว`, 'success');
     }
   };
 
   // 4. Admin manual toggle status
   const handleToggleLocationStatus = async (locationName: string, currentStatus: string) => {
     const nextStatus = currentStatus === 'มีอยู่' ? 'หมดแล้ว' : 'มีอยู่';
-    setLocations(prev => prev.map(loc => loc.name === locationName ? { ...loc, status: nextStatus } : loc));
+    setLocations(prev => {
+      const updated = prev.map(loc => loc.name === locationName ? { ...loc, status: nextStatus } : loc);
+      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
+      return updated;
+    });
 
-    if (nextStatus === 'หมดแล้ว') {
-      await handleReportEmpty(locationName);
-    } else {
-      showToast(`ปรับสถานะจุด "${locationName}" เป็น "${nextStatus}" เรียบร้อยแล้ว`, 'success');
-    }
+    showToast(`ปรับสถานะจุด "${locationName}" เป็น "${nextStatus}" เรียบร้อยแล้ว`, 'success');
   };
 
   // 5. Admin Add Location

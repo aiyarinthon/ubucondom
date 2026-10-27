@@ -345,9 +345,16 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
         </div>
       `;
 
-      // Attach event listener for report empty
-      if (isAvailable) {
-        setTimeout(() => {
+      const marker = L.marker([loc.lat, loc.lng], { icon: customPin })
+        .bindPopup(popupDiv, { maxWidth: 320 })
+        .addTo(markersGroupRef.current!);
+
+      marker.on('click', () => {
+        setSelectedLocation(loc);
+      });
+
+      marker.on('popupopen', () => {
+        if (isAvailable) {
           const btn = document.getElementById(`report-empty-btn-${loc.id}`);
           if (btn) {
             btn.onclick = () => {
@@ -355,15 +362,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
               handleReportEmptyClick(loc.name);
             };
           }
-        }, 50);
-      }
-
-      const marker = L.marker([loc.lat, loc.lng], { icon: customPin })
-        .bindPopup(popupDiv, { maxWidth: 320 })
-        .addTo(markersGroupRef.current!);
-
-      marker.on('click', () => {
-        setSelectedLocation(loc);
+        }
       });
 
       markerMapRef.current[loc.id] = marker;
