@@ -202,7 +202,7 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
                 </p>
               </div>
               <p className="text-xs sm:text-sm font-bold text-slate-800 mt-1">
-                • ตรวจคัดกรองและให้คำปรึกษาโรคติดต่อทางเพศสัมพันธ์ <span className="text-emerald-600 font-black bg-emerald-50 px-1.5 py-0.5 rounded-md border border-emerald-200">ฟรี</span>
+                • หากต้องการปรึกษาทุกปัญหาของวัยรุ่น
               </p>
             </div>
             <div className="w-10 h-10 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-xl text-emerald-600 shrink-0">
