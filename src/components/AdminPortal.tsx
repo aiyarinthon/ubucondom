@@ -25,7 +25,8 @@ import {
   Search,
   RotateCcw,
   X,
-  Check
+  Check,
+  Upload
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { UbuLocation, VolunteerLog, SurveyRecord } from '../types/ubuCondom';
@@ -87,6 +88,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onDeleteSurvey,
   onClearAllSurveys,
   onRestoreDefaultSurveys,
+  onBatchImportVolunteerLogs,
   onRefreshData,
   isLoading,
 }) => {
@@ -368,6 +370,64 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Volunteer Logs');
     XLSX.writeFile(workbook, `UBU_Condom_Volunteer_Report.xlsx`);
+  };
+
+  // Import Volunteer Logs from Excel (.xlsx/.csv)
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleImportExcelClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleImportExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const json = XLSX.utils.sheet_to_json<any>(worksheet);
+
+        if (!json || json.length === 0) {
+          alert('ไม่พบข้อมูลในไฟล์ Excel หรือรูปแบบไฟล์ไม่ถูกต้อง');
+          return;
+        }
+
+        const importedLogs: VolunteerLog[] = json.map((row, idx) => ({
+          id: row['ID'] || `import-${Date.now()}-${idx}`,
+          date: row['วัน-เวลาปฏิบัติงาน'] || row['date'] || new Date().toISOString().replace('T', ' ').slice(0, 16),
+          name: row['ชื่อ-นามสกุล จิตอาสา'] || row['ชื่อ'] || row['name'] || 'จิตอาสา',
+          studentId: row['รหัสนักศึกษา'] || row['รหัส นศ.'] || row['studentId'] || '-',
+          faculty: row['คณะ/หน่วยงาน'] || row['คณะ'] || row['faculty'] || 'คณะวิทยาศาสตร์',
+          year: row['ชั้นปี'] || row['year'] || 'ปี 3',
+          location: row['จุดบริการที่เติม'] || row['จุดสถานที่ที่เติม'] || row['location'] || 'หน้าห้องสโมสรนักศึกษา',
+          lubricant: Number(row['เจลหล่อลื่น (ชิ้น)'] || row['เจล'] || row['lubricant'] || 0),
+          size49: Number(row['ไซส์ 49 (ชิ้น)'] || row['49'] || row['size49'] || 0),
+          size52: Number(row['ไซส์ 52 (ชิ้น)'] || row['52'] || row['size52'] || 0),
+          size54: Number(row['ไซส์ 54 (ชิ้น)'] || row['54'] || row['size54'] || 0),
+          size56: Number(row['ไซส์ 56 (ชิ้น)'] || row['56'] || row['size56'] || 0),
+          comment: row['หมายเหตุ/ข้อความ'] || row['หมายเหตุ'] || row['ข้อความจิตอาสา'] || row['comment'] || '-',
+          imageUrl: row['รูปภาพหลักฐาน'] || row['รูปภาพ'] || row['imageUrl'] || '',
+        }));
+
+        if (onBatchImportVolunteerLogs) {
+          onBatchImportVolunteerLogs(importedLogs);
+          alert(`✅ นำเข้าข้อมูลประวัติสำเร็จ ${importedLogs.length} รายการเข้าสู่ตารางเรียบร้อยแล้ว!`);
+        } else {
+          alert(`✅ อ่านข้อมูลสำเร็จ ${importedLogs.length} รายการ`);
+        }
+      } catch (err) {
+        console.error(err);
+        alert('เกิดข้อผิดพลาดในการอ่านไฟล์ Excel โปรดตรวจสอบรูปแบบไฟล์');
+      } finally {
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.readAsArrayBuffer(file);
   };
 
   // Survey Table Filters
@@ -1131,6 +1191,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <span>ล้างประวัติทั้งหมด</span>
               </button>
             )}
+
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept=".xlsx, .xls, .csv"
+              onChange={handleImportExcel}
+              className="hidden"
+            />
+            <button
+              onClick={handleImportExcelClick}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
+              title="นำเข้าข้อมูลประวัติการเติมจากไฟล์ Excel (.xlsx)"
+            >
+              <Upload className="w-4 h-4" />
+              <span>นำเข้า Excel</span>
+            </button>
 
             <button
               onClick={handleExportExcel}
