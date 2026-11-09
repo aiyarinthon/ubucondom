@@ -65,6 +65,7 @@ interface AdminPortalProps {
   onClearAllSurveys?: () => void;
   onRestoreDefaultSurveys?: () => void;
   onAddRefillLog?: (log: any) => void;
+  onBatchImportVolunteerLogs?: (logs: any[]) => void;
   onClearLocationLogs?: (locationName: string) => void;
   onRefreshData: () => Promise<void>;
   isLoading?: boolean;
@@ -495,7 +496,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
 
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-800">แผงควบคุมหลักระบบผู้ดูแลหลังบ้าน</h2>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-800 uppercase tracking-wide">admin</h2>
         </div>
 
         {loginError && (

@@ -39,13 +39,17 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
       <nav className="bg-white/95 backdrop-blur-md px-4 sm:px-8 py-4 rounded-3xl border border-slate-200/90 custom-shadow space-y-3.5 md:space-y-0 md:flex md:items-center md:justify-between md:gap-4">
         {/* Brand & Wordmark and Mobile Refresh Action */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-3.5">
-            <div className="bg-blue-600 text-white w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-base tracking-wider shadow-md shadow-blue-500/25 shrink-0">
+          <div 
+            onClick={() => setActiveTab('admin')}
+            className="flex items-center space-x-3.5 cursor-pointer group"
+            title="คลิกเพื่อเข้าสู่ระบบแอดมิน"
+          >
+            <div className="bg-blue-600 group-hover:bg-blue-700 text-white w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-base tracking-wider shadow-md shadow-blue-500/25 shrink-0 transition-colors">
               UBU
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-extrabold text-xl sm:text-2xl text-slate-800 tracking-tight">
+                <span className="font-extrabold text-xl sm:text-2xl text-slate-800 group-hover:text-blue-600 tracking-tight transition-colors">
                   UBU Condom
                 </span>
                 <span className="text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-0.5 rounded-full shrink-0">
@@ -87,9 +91,6 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
                 <option value="volunteer" className="py-2 text-slate-800 font-semibold">
                   💛 2. เติมถุงยางอนามัย (หน่วยจิตอาสา)
                 </option>
-                <option value="admin" className="py-2 text-slate-800 font-semibold">
-                  🔑 3. ระบบหลังบ้านแอดมิน (ผู้ดูแลโครงการ)
-                </option>
               </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-blue-600">
                 <ChevronDown className="w-5 h-5 stroke-[2.5]" />
@@ -119,17 +120,6 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
               }`}
             >
               <span>💛 เติมถุงยางอนามัย</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('admin')}
-              className={`px-5 py-2.5 rounded-xl font-bold text-sm lg:text-base transition-all whitespace-nowrap cursor-pointer flex items-center gap-2 ${
-                activeTab === 'admin'
-                  ? 'bg-slate-900 text-white shadow-md'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-              }`}
-            >
-              <span>🔑 ระบบหลังบ้านแอดมิน</span>
             </button>
           </div>
         </div>
