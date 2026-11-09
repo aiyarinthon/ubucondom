@@ -332,6 +332,63 @@ export default function App() {
     showToast('ลบรายการประวัติการเติมเรียบร้อยแล้ว', 'info');
   };
 
+  // 9.1 Admin Add Refill Log
+  const handleAddRefillLog = (newLogData: Omit<VolunteerLog, 'id' | 'date'>) => {
+    // 1. Mark location status to "มีอยู่"
+    setLocations(prev => {
+      const updated = prev.map(loc => loc.name === newLogData.location ? { ...loc, status: 'มีอยู่' } : loc);
+      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
+      return updated;
+    });
+
+    // 2. Append new refill log
+    const newLog: VolunteerLog = {
+      id: 'admin-refill-' + Date.now(),
+      date: new Date().toISOString().replace('T', ' ').slice(0, 16),
+      ...newLogData,
+    };
+
+    setVolunteerLogs(prev => {
+      const updated = [newLog, ...prev];
+      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
+      return updated;
+    });
+
+    showToast(`เพิ่มยอดเติมสำหรับจุด "${newLogData.location}" เรียบร้อยแล้ว`, 'success');
+  };
+
+  // 9.1.5 Admin Batch Import Volunteer Logs from File
+  const handleBatchImportVolunteerLogs = (importedLogs: VolunteerLog[]) => {
+    if (!importedLogs || importedLogs.length === 0) return;
+
+    const refilledLocations = new Set(importedLogs.map(l => l.location));
+    setLocations(prev => {
+      const updated = prev.map(loc => refilledLocations.has(loc.name) ? { ...loc, status: 'มีอยู่' } : loc);
+      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
+      return updated;
+    });
+
+    setVolunteerLogs(prev => {
+      const updated = [...importedLogs, ...prev];
+      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
+      return updated;
+    });
+
+    showToast(`นำเข้าข้อมูลการเติมของจิตอาสาจำนวน ${importedLogs.length} รายการ จากไฟล์แนบสำเร็จ!`, 'success');
+  };
+
+  // 9.2 Admin Clear Refill Logs for specific Location
+  const handleClearLocationLogs = (locationName: string) => {
+    if (window.confirm(`คุณต้องการลบยอดประวัติการเติมของจุด "${locationName}" ทั้งหมดใช่หรือไม่?`)) {
+      setVolunteerLogs(prev => {
+        const updated = prev.filter(log => log.location !== locationName);
+        localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
+        return updated;
+      });
+      showToast(`ลบประวัติยอดเติมของจุด "${locationName}" ทั้งหมดเรียบร้อยแล้ว`, 'info');
+    }
+  };
+
   // 10. Admin Clear All Volunteer Logs
   const handleClearAllVolunteerLogs = () => {
     if (window.confirm('คุณต้องการลบประวัติการเติมของจิตอาสา "ทั้งหมด" ใช่หรือไม่?')) {
@@ -440,6 +497,9 @@ export default function App() {
               onDeleteVolunteerLog={handleDeleteVolunteerLog}
               onClearAllVolunteerLogs={handleClearAllVolunteerLogs}
               onRestoreDefaultVolunteerLogs={handleRestoreDefaultVolunteerLogs}
+              onAddRefillLog={handleAddRefillLog}
+              onBatchImportVolunteerLogs={handleBatchImportVolunteerLogs}
+              onClearLocationLogs={handleClearLocationLogs}
               onDeleteSurvey={handleDeleteSurvey}
               onClearAllSurveys={handleClearAllSurveys}
               onRestoreDefaultSurveys={handleRestoreDefaultSurveys}

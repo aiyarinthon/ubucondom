@@ -64,6 +64,8 @@ interface AdminPortalProps {
   onDeleteSurvey?: (id: string) => void;
   onClearAllSurveys?: () => void;
   onRestoreDefaultSurveys?: () => void;
+  onAddRefillLog?: (log: any) => void;
+  onClearLocationLogs?: (locationName: string) => void;
   onRefreshData: () => Promise<void>;
   isLoading?: boolean;
 }
@@ -407,6 +409,80 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     XLSX.writeFile(workbook, `UBU_Condom_Satisfaction_Survey_Report.xlsx`);
   };
 
+  const handleExportCompleteSummaryExcel = () => {
+    const workbook = XLSX.utils.book_new();
+
+    // 1. Service Points Ranking Sheet
+    const rankingRows = locationStats.map((item, idx) => ({
+      'ลำดับ': idx + 1,
+      'ชื่อจุดบริการ': item.name,
+      'ถุงยางอนามัย (ชิ้น)': item.condoms,
+      'เจลหล่อลื่น (ซอง)': item.lubricant,
+      'จำนวนรวมทั้งหมด (ชิ้น)': item.total,
+      'สัดส่วนจากยอดรวม (%)': `${Math.round(((item.total || 0) / (productTotals.total || 1)) * 100)}%`,
+    }));
+    const wsRanking = XLSX.utils.json_to_sheet(rankingRows);
+    XLSX.utils.book_append_sheet(workbook, wsRanking, 'อันดับจุดบริการ');
+
+    // 2. Product Breakdown Sheet
+    const productRows = [
+      { 'ประเภทผลิตภัณฑ์': 'ถุงยางอนามัย ไซส์ 49 มม.', 'จำนวน (ชิ้น)': productTotals.size49, 'สัดส่วน (%)': `${Math.round((productTotals.size49 / (productTotals.total || 1)) * 100)}%` },
+      { 'ประเภทผลิตภัณฑ์': 'ถุงยางอนามัย ไซส์ 52 มม. (ยอดนิยม)', 'จำนวน (ชิ้น)': productTotals.size52, 'สัดส่วน (%)': `${Math.round((productTotals.size52 / (productTotals.total || 1)) * 100)}%` },
+      { 'ประเภทผลิตภัณฑ์': 'ถุงยางอนามัย ไซส์ 54 มม.', 'จำนวน (ชิ้น)': productTotals.size54, 'สัดส่วน (%)': `${Math.round((productTotals.size54 / (productTotals.total || 1)) * 100)}%` },
+      { 'ประเภทผลิตภัณฑ์': 'ถุงยางอนามัย ไซส์ 56 มม.', 'จำนวน (ชิ้น)': productTotals.size56, 'สัดส่วน (%)': `${Math.round((productTotals.size56 / (productTotals.total || 1)) * 100)}%` },
+      { 'ประเภทผลิตภัณฑ์': 'เจลหล่อลื่นอนามัย', 'จำนวน (ชิ้น)': productTotals.lubricant, 'สัดส่วน (%)': `${Math.round((productTotals.lubricant / (productTotals.total || 1)) * 100)}%` },
+      { 'ประเภทผลิตภัณฑ์': 'รวมทั้งหมด', 'จำนวน (ชิ้น)': productTotals.total, 'สัดส่วน (%)': '100%' },
+    ];
+    const wsProduct = XLSX.utils.json_to_sheet(productRows);
+    XLSX.utils.book_append_sheet(workbook, wsProduct, 'สัดส่วนผลิตภัณฑ์');
+
+    // 3. Satisfaction Summary Sheet
+    const starCounts = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    ratings.forEach(r => { if (starCounts[r as keyof typeof starCounts] !== undefined) starCounts[r as keyof typeof starCounts]++; });
+    const totalRatings = ratings.length || 1;
+    const satisfactionRows = [
+      { 'ระดับความพึงพอใจ': '5 ดาว (ดีมากที่สุด)', 'จำนวนผู้ประเมิน (คน)': starCounts[5], 'สัดส่วน (%)': `${Math.round((starCounts[5] / totalRatings) * 100)}%` },
+      { 'ระดับความพึงพอใจ': '4 ดาว (ดีมาก)', 'จำนวนผู้ประเมิน (คน)': starCounts[4], 'สัดส่วน (%)': `${Math.round((starCounts[4] / totalRatings) * 100)}%` },
+      { 'ระดับความพึงพอใจ': '3 ดาว (ปานกลาง)', 'จำนวนผู้ประเมิน (คน)': starCounts[3], 'สัดส่วน (%)': `${Math.round((starCounts[3] / totalRatings) * 100)}%` },
+      { 'ระดับความพึงพอใจ': '2 ดาว (พอใช้)', 'จำนวนผู้ประเมิน (คน)': starCounts[2], 'สัดส่วน (%)': `${Math.round((starCounts[2] / totalRatings) * 100)}%` },
+      { 'ระดับความพึงพอใจ': '1 ดาว (ควรปรับปรุง)', 'จำนวนผู้ประเมิน (คน)': starCounts[1], 'สัดส่วน (%)': `${Math.round((starCounts[1] / totalRatings) * 100)}%` },
+      { 'ระดับความพึงพอใจ': 'คะแนนเฉลี่ยรวม (CSAT)', 'จำนวนผู้ประเมิน (คน)': `${(ratings.reduce((a, b) => a + b, 0) / (ratings.length || 1)).toFixed(1)} / 5.0 ดาว`, 'สัดส่วน (%)': `พึงพอใจระดับดี-ดีมาก ${Math.round(((starCounts[5] + starCounts[4]) / totalRatings) * 100)}%` },
+    ];
+    const wsSatisfaction = XLSX.utils.json_to_sheet(satisfactionRows);
+    XLSX.utils.book_append_sheet(workbook, wsSatisfaction, 'สรุปผลประเมินความพอใจ');
+
+    // 4. Volunteer Logs Sheet
+    const logRows = logs.map(log => ({
+      'วัน-เวลาปฏิบัติงาน': log.date,
+      'ชื่อ-นามสกุล จิตอาสา': log.name,
+      'รหัสนักศึกษา': log.studentId,
+      'คณะ/หน่วยงาน': log.faculty,
+      'ชั้นปี': log.year,
+      'จุดบริการที่เติม': log.location,
+      'เจลหล่อลื่น (ชิ้น)': log.lubricant,
+      'ไซส์ 49 (ชิ้น)': log.size49,
+      'ไซส์ 52 (ชิ้น)': log.size52,
+      'ไซส์ 54 (ชิ้น)': log.size54,
+      'ไซส์ 56 (ชิ้น)': log.size56,
+      'จำนวนรวมทั้งหมด (ชิ้น)': Number(log.lubricant || 0) + Number(log.size49 || 0) + Number(log.size52 || 0) + Number(log.size54 || 0) + Number(log.size56 || 0),
+      'หมายเหตุ': log.comment,
+    }));
+    const wsLogs = XLSX.utils.json_to_sheet(logRows);
+    XLSX.utils.book_append_sheet(workbook, wsLogs, 'บันทึกการเติมของจิตอาสา');
+
+    // 5. Survey Feedback Sheet
+    const feedbackRows = surveys.map((s, idx) => ({
+      'ลำดับ': idx + 1,
+      'วัน-เวลา': s.date,
+      'คะแนน': `${s.rating} ดาว`,
+      'ข้อคิดเห็น / ข้อเสนอแนะ': s.feedback || '-',
+    }));
+    const wsFeedback = XLSX.utils.json_to_sheet(feedbackRows);
+    XLSX.utils.book_append_sheet(workbook, wsFeedback, 'ข้อเสนอแนะและความคิดเห็น');
+
+    XLSX.writeFile(workbook, `UBU_Condom_Complete_Executive_Report.xlsx`);
+  };
+
   const handlePrintReport = () => {
     window.print();
   };
@@ -475,14 +551,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5 w-full sm:w-auto">
+        <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap">
+          <button
+            onClick={handleExportCompleteSummaryExcel}
+            className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-bold rounded-2xl shadow-sm transition-all cursor-pointer"
+            title="ดาวน์โหลดข้อมูลสรุปรายงานทั้งหมดเป็น Excel (.xlsx)"
+          >
+            <Download className="w-4 h-4" />
+            <span>ดาวน์โหลดรายงานสรุป (.xlsx)</span>
+          </button>
+
           <button
             onClick={handlePrintReport}
             className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white text-xs sm:text-sm font-bold rounded-2xl shadow-sm transition-all cursor-pointer"
             title="พิมพ์หน้ารายงานสรุปสำหรับผู้บริหาร"
           >
             <Printer className="w-4 h-4" />
-            <span>พิมพ์รายงานผู้บริหาร (PDF)</span>
+            <span>พิมพ์รายงานผู้บริหาร</span>
           </button>
 
           <button

@@ -63,7 +63,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersGroupRef = useRef<L.LayerGroup | null>(null);
   const userLocationLayerRef = useRef<L.LayerGroup | null>(null);
-  const markerMapRef = useRef<Record<number, L.Marker>>({});
+  const markerMapRef = useRef<Record<string | number, L.Marker>>({});
 
   const [mapLayer, setMapLayer] = useState<MapLayerType>('roadmap');
   const [searchTerm, setSearchTerm] = useState('');
