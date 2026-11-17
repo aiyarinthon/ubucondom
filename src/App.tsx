@@ -9,25 +9,33 @@ import { CampusMapView } from './components/CampusMapView';
 import { VolunteerPortal } from './components/VolunteerPortal';
 import { AdminPortal } from './components/AdminPortal';
 import { GasUrlModal } from './components/GasUrlModal';
-import { UbuLocation, VolunteerLog, VolunteerFormData } from './types/ubuCondom';
-import { 
-  INITIAL_UBU_LOCATIONS, 
-  INITIAL_VOLUNTEER_LOGS, 
-  INITIAL_RATINGS,
-  INITIAL_SURVEY_RECORDS 
-} from './data/ubuData';
-import { SurveyRecord } from './types/ubuCondom';
+import { UbuLocation, VolunteerLog, VolunteerFormData, SurveyRecord } from './types/ubuCondom';
+import { INITIAL_UBU_LOCATIONS } from './data/ubuData';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+
+const MOCK_VOLUNTEER_IDS = new Set(['vol-101', 'vol-102', 'vol-103', 'vol-104', 'vol-105']);
+const MOCK_SURVEY_IDS = new Set([
+  'sur-101', 'sur-102', 'sur-103', 'sur-104',
+  'sur-105', 'sur-106', 'sur-107', 'sur-108',
+]);
+
+function safeSaveLocal(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore localStorage quota exceeded errors; server store is authoritative
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'user' | 'volunteer' | 'admin' | 'config'>('user');
-  
-  // GAS Web App URL
+
+  // GAS Web App URL (synced with server)
   const [gasUrl, setGasUrl] = useState<string>(() => {
     return localStorage.getItem('ubu_gas_url') || '';
   });
 
-  // State for UBU Condom Application with localStorage persistence
+  // State for UBU Condom Application (cached in localStorage, synced with server API)
   const [locations, setLocations] = useState<UbuLocation[]>(() => {
     const saved = localStorage.getItem('ubu_locations_data');
     if (saved) {
@@ -40,7 +48,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem('ubu_locations_data', JSON.stringify(locations));
+    safeSaveLocal('ubu_locations_data', locations);
   }, [locations]);
 
   const [volunteerLogs, setVolunteerLogs] = useState<VolunteerLog[]>(() => {
@@ -48,36 +56,43 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((l: VolunteerLog) => !MOCK_VOLUNTEER_IDS.has(String(l.id || '')));
+        }
       } catch {}
     }
-    return INITIAL_VOLUNTEER_LOGS;
+    return [];
   });
 
   useEffect(() => {
-    localStorage.setItem('ubu_volunteer_logs', JSON.stringify(volunteerLogs));
+    safeSaveLocal('ubu_volunteer_logs', volunteerLogs);
   }, [volunteerLogs]);
 
-  // Survey Records State with localStorage persistence
   const [surveys, setSurveys] = useState<SurveyRecord[]>(() => {
     const saved = localStorage.getItem('ubu_surveys_data');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((s: SurveyRecord) => !MOCK_SURVEY_IDS.has(String(s.id || '')));
+        }
       } catch {}
     }
-    return INITIAL_SURVEY_RECORDS;
+    return [];
   });
 
   useEffect(() => {
-    localStorage.setItem('ubu_surveys_data', JSON.stringify(surveys));
+    safeSaveLocal('ubu_surveys_data', surveys);
   }, [surveys]);
 
   const [ratings, setRatings] = useState<number[]>(() => {
-    if (surveys.length > 0) return surveys.map(s => s.rating);
-    return INITIAL_RATINGS;
+    return surveys.map(s => s.rating);
   });
+
+  useEffect(() => {
+    setRatings(surveys.map(s => s.rating));
+  }, [surveys]);
+
   const [isLoading, setIsLoading] = useState(false);
 
   // Modal
@@ -93,13 +108,122 @@ export default function App() {
     }, 4000);
   };
 
-  // Fetch data from real Google Apps Script if URL provided
-  const handleFetchFromGas = useCallback(async (targetUrl = gasUrl) => {
-    if (!targetUrl || !targetUrl.trim()) return;
+  // Sync authoritative state from shared Express server
+  const fetchServerData = useCallback(async (silent = false) => {
+    if (!silent) setIsLoading(true);
+    try {
+      const res = await fetch('/api/data', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Server HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.success) {
+        // One-time safe migration if server store is brand new & browser already has real saved data
+        if (!data.initialized) {
+          const hasLocalLogs = localStorage.getItem('ubu_volunteer_logs') !== null;
+          const hasLocalLocations = localStorage.getItem('ubu_locations_data') !== null;
+          const hasLocalSurveys = localStorage.getItem('ubu_surveys_data') !== null;
+          const hasLocalGas = Boolean(localStorage.getItem('ubu_gas_url'));
 
+          if (hasLocalLogs || hasLocalLocations || hasLocalSurveys || hasLocalGas) {
+            const realLocalLogs = (() => {
+              try {
+                const parsed = JSON.parse(localStorage.getItem('ubu_volunteer_logs') || '[]');
+                return Array.isArray(parsed)
+                  ? parsed.filter((l: VolunteerLog) => !MOCK_VOLUNTEER_IDS.has(String(l.id || '')))
+                  : [];
+              } catch {
+                return [];
+              }
+            })();
+
+            const realLocalSurveys = (() => {
+              try {
+                const parsed = JSON.parse(localStorage.getItem('ubu_surveys_data') || '[]');
+                return Array.isArray(parsed)
+                  ? parsed.filter((s: SurveyRecord) => !MOCK_SURVEY_IDS.has(String(s.id || '')))
+                  : [];
+              } catch {
+                return [];
+              }
+            })();
+
+            const localLocations = (() => {
+              try {
+                const parsed = JSON.parse(localStorage.getItem('ubu_locations_data') || '[]');
+                return Array.isArray(parsed) && parsed.length > 0 ? parsed : undefined;
+              } catch {
+                return undefined;
+              }
+            })();
+
+            const bootRes = await fetch('/api/bootstrap', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                locations: localLocations,
+                volunteerLogs: realLocalLogs,
+                surveys: realLocalSurveys,
+                gasUrl: localStorage.getItem('ubu_gas_url') || '',
+              }),
+            });
+            if (bootRes.ok) {
+              const bootData = await bootRes.json();
+              if (bootData.success) {
+                if (Array.isArray(bootData.locations) && bootData.locations.length > 0) {
+                  setLocations(bootData.locations);
+                }
+                if (Array.isArray(bootData.volunteerLogs)) {
+                  setVolunteerLogs(bootData.volunteerLogs);
+                }
+                if (Array.isArray(bootData.surveys)) {
+                  setSurveys(bootData.surveys);
+                }
+                if (typeof bootData.gasUrl === 'string') {
+                  setGasUrl(bootData.gasUrl);
+                  localStorage.setItem('ubu_gas_url', bootData.gasUrl);
+                }
+                return bootData;
+              }
+            }
+          }
+        }
+
+        if (Array.isArray(data.locations) && data.locations.length > 0) {
+          setLocations(data.locations);
+        }
+        if (Array.isArray(data.volunteerLogs)) {
+          setVolunteerLogs(data.volunteerLogs);
+        }
+        if (Array.isArray(data.surveys)) {
+          setSurveys(data.surveys);
+        }
+        if (typeof data.gasUrl === 'string') {
+          setGasUrl(data.gasUrl);
+          localStorage.setItem('ubu_gas_url', data.gasUrl);
+        }
+      }
+      return data;
+    } catch (err) {
+      if (!silent) {
+        console.error('Failed to sync with server:', err);
+      }
+      return null;
+    } finally {
+      if (!silent) setIsLoading(false);
+    }
+  }, []);
+
+  // Fetch data from real Google Apps Script if URL provided (and also refresh server store)
+  const handleFetchFromGas = useCallback(async (targetUrl = gasUrl) => {
     setIsLoading(true);
     try {
-      // 1. Fetch Locations
+      await fetchServerData(true);
+
+      if (!targetUrl || !targetUrl.trim()) {
+        showToast('ซิงค์ข้อมูลล่าสุดจากเซิร์ฟเวอร์กลางเรียบร้อยแล้ว!', 'success');
+        return;
+      }
+
+      // 1. Fetch Locations from GAS
       const locProxyUrl = `/api/gas-proxy?url=${encodeURIComponent(targetUrl.trim() + '?action=getLocations')}`;
       const locRes = await fetch(locProxyUrl);
       if (locRes.ok) {
@@ -117,7 +241,7 @@ export default function App() {
         }
       }
 
-      // 2. Fetch Admin Data (Volunteer logs & Surveys)
+      // 2. Fetch Admin Data (Volunteer logs & Surveys) from GAS
       const adminProxyUrl = `/api/gas-proxy?url=${encodeURIComponent(targetUrl.trim() + '?action=getAdminData')}`;
       const adminRes = await fetch(adminProxyUrl);
       if (adminRes.ok) {
@@ -131,310 +255,385 @@ export default function App() {
         }
       }
 
-      showToast('ซิงค์ข้อมูลล่าสุดจาก Google Sheets สำเร็จ!', 'success');
+      showToast('ซิงค์ข้อมูลล่าสุดจากระบบกลางและ Google Sheets สำเร็จ!', 'success');
     } catch (err: any) {
       showToast(err.message || 'ไม่สามารถดึงข้อมูลจาก Google Apps Script ได้', 'error');
     } finally {
       setIsLoading(false);
     }
-  }, [gasUrl]);
+  }, [gasUrl, fetchServerData]);
 
-  // Initial load
+  // Initial load from server + optional GAS
   useEffect(() => {
-    if (gasUrl) {
-      handleFetchFromGas(gasUrl);
-    }
+    fetchServerData(true).then((serverData) => {
+      const activeGasUrl = (serverData && serverData.gasUrl) || gasUrl;
+      if (activeGasUrl) {
+        handleFetchFromGas(activeGasUrl);
+      }
+    });
   }, []);
+
+  // Re-sync whenever switching tabs or returning to browser window
+  useEffect(() => {
+    fetchServerData(true);
+  }, [activeTab, fetchServerData]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchServerData(true);
+    };
+    window.addEventListener('focus', handleFocus);
+    const interval = setInterval(() => {
+      fetchServerData(true);
+    }, 15000);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      clearInterval(interval);
+    };
+  }, [fetchServerData]);
 
   // Save GAS URL
   const handleSaveGasUrl = async (newUrl: string) => {
     setGasUrl(newUrl);
     localStorage.setItem('ubu_gas_url', newUrl);
+    try {
+      await fetch('/api/config/gas-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gasUrl: newUrl }),
+      });
+    } catch {}
     if (newUrl) {
       await handleFetchFromGas(newUrl);
     } else {
-      setLocations(INITIAL_UBU_LOCATIONS);
-      setVolunteerLogs(INITIAL_VOLUNTEER_LOGS);
-      setRatings(INITIAL_RATINGS);
-      showToast('สลับกลับมาใช้ชุดข้อมูลจำลอง ม.อุบลฯ', 'info');
+      await fetchServerData(false);
+      showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว (ใช้ฐานข้อมูลเซิร์ฟเวอร์กลาง)', 'info');
     }
   };
 
   // 1. Report Condom Out (User)
   const handleReportEmpty = async (locationName: string) => {
-    // Immediate Update & LocalStorage Persistence
-    setLocations(prev => {
-      const updated = prev.map(loc => loc.name === locationName ? { ...loc, status: 'หมดแล้ว' } : loc);
-      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
-      return updated;
-    });
-
-    if (gasUrl) {
-      try {
-        const response = await fetch('/api/gas-proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            _targetUrl: gasUrl,
-            action: 'reportOut',
-            locationName,
-          }),
-        });
-        const resJson = await response.json();
-        showToast(resJson.message || `อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
-      } catch (err: any) {
-        showToast(`อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
+    setLocations(prev => prev.map(loc => loc.name === locationName ? { ...loc, status: 'หมดแล้ว' } : loc));
+    try {
+      const response = await fetch('/api/report-empty', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationName }),
+      });
+      const resJson = await response.json();
+      if (resJson.success && Array.isArray(resJson.locations)) {
+        setLocations(resJson.locations);
       }
-    } else {
-      showToast(`อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
+      showToast(resJson.message || `อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
+    } catch {
+      showToast('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์กลางได้ โปรดลองใหม่อีกครั้ง', 'error');
     }
   };
 
   // 2. Submit Survey (User)
   const handleSubmitSurvey = async (rating: number, feedback: string) => {
-    const newSurvey: SurveyRecord = {
-      id: 'sur-' + Date.now(),
-      date: new Date().toISOString().replace('T', ' ').slice(0, 16),
-      rating,
-      feedback: feedback.trim(),
-    };
-
-    setSurveys(prev => [newSurvey, ...prev]);
-    setRatings(prev => [...prev, rating]);
-
-    if (gasUrl) {
-      try {
-        await fetch('/api/gas-proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            _targetUrl: gasUrl,
-            action: 'submitSurvey',
-            rating,
-            feedback,
-          }),
-        });
-      } catch {
-        // demo fallback
+    try {
+      const response = await fetch('/api/survey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating, feedback }),
+      });
+      const resJson = await response.json();
+      if (!response.ok || !resJson.success) {
+        throw new Error(resJson.error || 'บันทึกแบบประเมินไม่สำเร็จ');
       }
+      if (Array.isArray(resJson.surveys)) {
+        setSurveys(resJson.surveys);
+      }
+      showToast('บันทึกแบบประเมินเรียบร้อยแล้ว ขอบคุณสำหรับความคิดเห็นครับ', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'ไม่สามารถส่งแบบประเมินไปยังเซิร์ฟเวอร์ได้', 'error');
+      throw err;
     }
-    showToast('บันทึกแบบประเมินเรียบร้อยแล้ว ขอบคุณสำหรับความคิดเห็นครับ', 'success');
   };
 
-  // 3. Submit Volunteer Replenishment (Volunteer)
+  // 3. Submit Volunteer Replenishment (Volunteer -> Shared Server DB)
   const handleSubmitVolunteer = async (
     formData: VolunteerFormData,
     photoBase64?: string,
     fileName?: string,
     mimeType?: string
   ) => {
-    // 1. Mark location back to "มีอยู่" and persist to localStorage
-    setLocations(prev => {
-      const updated = prev.map(loc => loc.name === formData.location ? { ...loc, status: 'มีอยู่' } : loc);
-      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
-      return updated;
+    const response = await fetch('/api/volunteer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        formData,
+        photoBase64,
+        fileName,
+        mimeType,
+      }),
     });
 
-    // 2. Append to logs
-    const newLog: VolunteerLog = {
-      id: 'vol-' + Date.now(),
-      date: new Date().toISOString().replace('T', ' ').slice(0, 16),
-      name: formData.name,
-      year: formData.year,
-      faculty: formData.faculty,
-      studentId: formData.studentId,
-      location: formData.location,
-      lubricant: formData.lubricant,
-      size49: formData.size49,
-      size52: formData.size52,
-      size54: formData.size54,
-      size56: formData.size56,
-      comment: formData.comment || '-',
-      imageUrl: photoBase64 ? 'data:' + mimeType + ';base64,' + photoBase64 : '',
-    };
-
-    setVolunteerLogs(prev => [newLog, ...prev]);
-
-    if (gasUrl) {
-      try {
-        const response = await fetch('/api/gas-proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            _targetUrl: gasUrl,
-            action: 'submitVolunteer',
-            formData: {
-              ...formData,
-              fileData: photoBase64 ? { base64: photoBase64, fileName, mimeType } : undefined,
-            },
-          }),
-        });
-        const resJson = await response.json();
-        showToast(resJson.message || `บันทึกเติมของสำเร็จ! จุด "${formData.location}" เปลี่ยนสถานะเป็น 'มีอยู่' อัตโนมัติแล้ว`, 'success');
-      } catch (err: any) {
-        showToast(`บันทึกเติมของสำเร็จ! จุด "${formData.location}" เปลี่ยนสถานะเป็น 'มีอยู่' อัตโนมัติแล้ว`, 'success');
-      }
-    } else {
-      showToast(`บันทึกเติมของสำเร็จ! อัปเดตสถานะจุด "${formData.location}" เป็น 'มีอยู่' อัตโนมัติแล้ว`, 'success');
+    let resJson: any = {};
+    try {
+      resJson = await response.json();
+    } catch {
+      throw new Error('เซิร์ฟเวอร์ตอบกลับผิดพลาด ไม่สามารถบันทึกข้อมูลได้');
     }
+
+    if (!response.ok || !resJson.success) {
+      throw new Error(resJson.error || 'ไม่สามารถบันทึกข้อมูลไปยังระบบหลังบ้านได้ โปรดลองใหม่อีกครั้ง');
+    }
+
+    if (Array.isArray(resJson.locations)) {
+      setLocations(resJson.locations);
+    }
+    if (Array.isArray(resJson.volunteerLogs)) {
+      setVolunteerLogs(resJson.volunteerLogs);
+    }
+
+    showToast(
+      resJson.message || `บันทึกเติมของสำเร็จ! อัปเดตสถานะจุด "${formData.location}" เป็น 'มีอยู่' อัตโนมัติแล้ว`,
+      'success'
+    );
   };
 
   // 4. Admin manual toggle status
   const handleToggleLocationStatus = async (locationName: string, currentStatus: string) => {
-    const nextStatus = currentStatus === 'มีอยู่' ? 'หมดแล้ว' : 'มีอยู่';
-    setLocations(prev => {
-      const updated = prev.map(loc => loc.name === locationName ? { ...loc, status: nextStatus } : loc);
-      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
-      return updated;
-    });
-
-    showToast(`ปรับสถานะจุด "${locationName}" เป็น "${nextStatus}" เรียบร้อยแล้ว`, 'success');
+    try {
+      const res = await fetch('/api/admin/locations/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locationName, currentStatus }),
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.locations)) {
+        setLocations(data.locations);
+        showToast(`ปรับสถานะจุด "${locationName}" เป็น "${data.nextStatus}" เรียบร้อยแล้ว`, 'success');
+      }
+    } catch {
+      showToast('เกิดข้อผิดพลาดในการปรับสถานะ', 'error');
+    }
   };
 
   // 5. Admin Add Location
-  const handleAddLocation = (newLoc: Omit<UbuLocation, 'id'>) => {
-    const newId = Date.now();
-    const created: UbuLocation = {
-      id: newId,
-      ...newLoc,
-    };
-    setLocations(prev => [created, ...prev]);
-    showToast(`เพิ่มจุดติดตั้ง "${newLoc.name}" เรียบร้อยแล้ว`, 'success');
+  const handleAddLocation = async (newLoc: Omit<UbuLocation, 'id'>) => {
+    try {
+      const res = await fetch('/api/admin/locations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newLoc),
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.locations)) {
+        setLocations(data.locations);
+        showToast(`เพิ่มจุดติดตั้ง "${newLoc.name}" เรียบร้อยแล้ว`, 'success');
+      }
+    } catch {
+      showToast('ไม่สามารถเพิ่มจุดติดตั้งได้', 'error');
+    }
   };
 
   // 6. Admin Edit Location
-  const handleEditLocation = (id: string | number, updated: Partial<UbuLocation>) => {
-    setLocations(prev => prev.map(loc => loc.id === id ? { ...loc, ...updated } : loc));
-    showToast(`บันทึกการแก้ไขจุดติดตั้งเรียบร้อยแล้ว`, 'success');
+  const handleEditLocation = async (id: string | number, updated: Partial<UbuLocation>) => {
+    try {
+      const res = await fetch(`/api/admin/locations/${encodeURIComponent(String(id))}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.locations)) {
+        setLocations(data.locations);
+        showToast('บันทึกการแก้ไขจุดติดตั้งเรียบร้อยแล้ว', 'success');
+      }
+    } catch {
+      showToast('ไม่สามารถบันทึกการแก้ไขจุดติดตั้งได้', 'error');
+    }
   };
 
   // 7. Admin Delete Location
-  const handleDeleteLocation = (id: string | number) => {
+  const handleDeleteLocation = async (id: string | number) => {
     const target = locations.find(l => l.id === id);
-    setLocations(prev => prev.filter(loc => loc.id !== id));
-    showToast(`ลบจุดติดตั้ง "${target?.name || ''}" ออกจากระบบแล้ว`, 'info');
+    try {
+      const res = await fetch(`/api/admin/locations/${encodeURIComponent(String(id))}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.locations)) {
+        setLocations(data.locations);
+        showToast(`ลบจุดติดตั้ง "${target?.name || ''}" ออกจากระบบแล้ว`, 'info');
+      }
+    } catch {
+      showToast('ไม่สามารถลบจุดติดตั้งได้', 'error');
+    }
   };
 
   // 8. Admin Reset Default Locations
-  const handleResetDefaultLocations = () => {
-    setLocations(INITIAL_UBU_LOCATIONS);
-    localStorage.setItem('ubu_locations_data', JSON.stringify(INITIAL_UBU_LOCATIONS));
-    showToast('คืนค่าจุดติดตั้งกลับเป็น 15 จุดเริ่มต้นของ ม.อุบลฯ เรียบร้อยแล้ว', 'info');
+  const handleResetDefaultLocations = async () => {
+    try {
+      const res = await fetch('/api/admin/locations/reset', { method: 'POST' });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.locations)) {
+        setLocations(data.locations);
+        showToast('คืนค่าจุดติดตั้งกลับเป็น 15 จุดเริ่มต้นของ ม.อุบลฯ เรียบร้อยแล้ว', 'info');
+      }
+    } catch {
+      showToast('ไม่สามารถคืนค่าจุดติดตั้งได้', 'error');
+    }
   };
 
   // 9. Admin Delete Single Volunteer Log
-  const handleDeleteVolunteerLog = (id: string) => {
-    setVolunteerLogs(prev => {
-      const updated = prev.filter(log => log.id !== id);
-      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
-      return updated;
-    });
-    showToast('ลบรายการประวัติการเติมเรียบร้อยแล้ว', 'info');
+  const handleDeleteVolunteerLog = async (id: string) => {
+    try {
+      const res = await fetch(`/api/admin/logs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.volunteerLogs)) {
+        setVolunteerLogs(data.volunteerLogs);
+        showToast('ลบรายการประวัติการเติมเรียบร้อยแล้ว', 'info');
+      }
+    } catch {
+      showToast('ไม่สามารถลบรายการประวัติการเติมได้', 'error');
+    }
   };
 
   // 9.1 Admin Add Refill Log
-  const handleAddRefillLog = (newLogData: Omit<VolunteerLog, 'id' | 'date'>) => {
-    // 1. Mark location status to "มีอยู่"
-    setLocations(prev => {
-      const updated = prev.map(loc => loc.name === newLogData.location ? { ...loc, status: 'มีอยู่' } : loc);
-      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
-      return updated;
-    });
-
-    // 2. Append new refill log
-    const newLog: VolunteerLog = {
-      id: 'admin-refill-' + Date.now(),
-      date: new Date().toISOString().replace('T', ' ').slice(0, 16),
-      ...newLogData,
-    };
-
-    setVolunteerLogs(prev => {
-      const updated = [newLog, ...prev];
-      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
-      return updated;
-    });
-
-    showToast(`เพิ่มยอดเติมสำหรับจุด "${newLogData.location}" เรียบร้อยแล้ว`, 'success');
+  const handleAddRefillLog = async (newLogData: Omit<VolunteerLog, 'id' | 'date'>) => {
+    try {
+      const res = await fetch('/api/admin/logs/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newLogData),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (Array.isArray(data.locations)) setLocations(data.locations);
+        if (Array.isArray(data.volunteerLogs)) setVolunteerLogs(data.volunteerLogs);
+        showToast(`เพิ่มยอดเติมสำหรับจุด "${newLogData.location}" เรียบร้อยแล้ว`, 'success');
+      }
+    } catch {
+      showToast('ไม่สามารถเพิ่มยอดเติมได้', 'error');
+    }
   };
 
-  // 9.1.5 Admin Batch Import Volunteer Logs from File
-  const handleBatchImportVolunteerLogs = (importedLogs: VolunteerLog[]) => {
+  // 9.1.5 Admin Batch Import Volunteer Logs from File (deduplicated on server)
+  const handleBatchImportVolunteerLogs = async (importedLogs: VolunteerLog[]) => {
     if (!importedLogs || importedLogs.length === 0) return;
-
-    const refilledLocations = new Set(importedLogs.map(l => l.location));
-    setLocations(prev => {
-      const updated = prev.map(loc => refilledLocations.has(loc.name) ? { ...loc, status: 'มีอยู่' } : loc);
-      localStorage.setItem('ubu_locations_data', JSON.stringify(updated));
-      return updated;
-    });
-
-    setVolunteerLogs(prev => {
-      const updated = [...importedLogs, ...prev];
-      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
-      return updated;
-    });
-
-    showToast(`นำเข้าข้อมูลการเติมของจิตอาสาจำนวน ${importedLogs.length} รายการ จากไฟล์แนบสำเร็จ!`, 'success');
+    try {
+      const res = await fetch('/api/admin/logs/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: importedLogs }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (Array.isArray(data.locations)) setLocations(data.locations);
+        if (Array.isArray(data.volunteerLogs)) setVolunteerLogs(data.volunteerLogs);
+        const added = Number(data.addedCount ?? importedLogs.length);
+        const skipped = Number(data.skippedCount ?? 0);
+        showToast(
+          skipped > 0
+            ? `นำเข้าข้อมูลใหม่ ${added} รายการ (ข้ามข้อมูลเดิมที่มีอยู่แล้ว ${skipped} รายการ)`
+            : `นำเข้าข้อมูลการเติมของจิตอาสาจำนวน ${added} รายการสำเร็จ!`,
+          'success'
+        );
+      }
+    } catch {
+      showToast('ไม่สามารถนำเข้าข้อมูลจากไฟล์ได้', 'error');
+    }
   };
 
   // 9.2 Admin Clear Refill Logs for specific Location
-  const handleClearLocationLogs = (locationName: string) => {
+  const handleClearLocationLogs = async (locationName: string) => {
     if (window.confirm(`คุณต้องการลบยอดประวัติการเติมของจุด "${locationName}" ทั้งหมดใช่หรือไม่?`)) {
-      setVolunteerLogs(prev => {
-        const updated = prev.filter(log => log.location !== locationName);
-        localStorage.setItem('ubu_volunteer_logs', JSON.stringify(updated));
-        return updated;
-      });
-      showToast(`ลบประวัติยอดเติมของจุด "${locationName}" ทั้งหมดเรียบร้อยแล้ว`, 'info');
+      try {
+        const res = await fetch('/api/admin/logs/clear-location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locationName }),
+        });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.volunteerLogs)) {
+          setVolunteerLogs(data.volunteerLogs);
+          showToast(`ลบประวัติยอดเติมของจุด "${locationName}" ทั้งหมดเรียบร้อยแล้ว`, 'info');
+        }
+      } catch {
+        showToast('ไม่สามารถลบประวัติยอดเติมได้', 'error');
+      }
     }
   };
 
   // 10. Admin Clear All Volunteer Logs
-  const handleClearAllVolunteerLogs = () => {
+  const handleClearAllVolunteerLogs = async () => {
     if (window.confirm('คุณต้องการลบประวัติการเติมของจิตอาสา "ทั้งหมด" ใช่หรือไม่?')) {
-      setVolunteerLogs([]);
-      localStorage.setItem('ubu_volunteer_logs', JSON.stringify([]));
-      showToast('ลบประวัติการเติมทั้งหมดเรียบร้อยแล้ว', 'info');
+      try {
+        const res = await fetch('/api/admin/logs', { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+          setVolunteerLogs([]);
+          showToast('ลบประวัติการเติมทั้งหมดเรียบร้อยแล้ว', 'info');
+        }
+      } catch {
+        showToast('ไม่สามารถลบประวัติทั้งหมดได้', 'error');
+      }
     }
   };
 
   // 11. Admin Restore Default Volunteer Logs
-  const handleRestoreDefaultVolunteerLogs = () => {
+  const handleRestoreDefaultVolunteerLogs = async () => {
     if (window.confirm('คุณต้องการคืนค่าประวัติการเติมกลับเป็น "ชุดข้อมูลเริ่มต้น" ใช่หรือไม่?')) {
-      setVolunteerLogs(INITIAL_VOLUNTEER_LOGS);
-      localStorage.setItem('ubu_volunteer_logs', JSON.stringify(INITIAL_VOLUNTEER_LOGS));
-      showToast('คืนค่าประวัติการเติมเริ่มต้นเรียบร้อยแล้ว', 'success');
+      try {
+        const res = await fetch('/api/admin/logs/restore', { method: 'POST' });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.volunteerLogs)) {
+          setVolunteerLogs(data.volunteerLogs);
+          showToast('คืนค่าประวัติการเติมเริ่มต้นเรียบร้อยแล้ว', 'success');
+        }
+      } catch {
+        showToast('ไม่สามารถคืนค่าประวัติเริ่มต้นได้', 'error');
+      }
     }
   };
 
   // 12. Admin Delete Single Survey Record
-  const handleDeleteSurvey = (id: string) => {
-    setSurveys(prev => {
-      const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('ubu_surveys_data', JSON.stringify(updated));
-      setRatings(updated.map(s => s.rating));
-      return updated;
-    });
-    showToast('ลบรายการผลประเมินเรียบร้อยแล้ว', 'info');
+  const handleDeleteSurvey = async (id: string) => {
+    try {
+      const res = await fetch(`/api/admin/surveys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.surveys)) {
+        setSurveys(data.surveys);
+        showToast('ลบรายการผลประเมินเรียบร้อยแล้ว', 'info');
+      }
+    } catch {
+      showToast('ไม่สามารถลบรายการผลประเมินได้', 'error');
+    }
   };
 
   // 13. Admin Clear All Surveys
-  const handleClearAllSurveys = () => {
+  const handleClearAllSurveys = async () => {
     if (window.confirm('คุณต้องการลบข้อมูลประเมินความพึงพอใจและข้อคิดเห็น "ทั้งหมด" ใช่หรือไม่?')) {
-      setSurveys([]);
-      setRatings([]);
-      localStorage.setItem('ubu_surveys_data', JSON.stringify([]));
-      showToast('ลบข้อมูลการประเมินทั้งหมดเรียบร้อยแล้ว', 'info');
+      try {
+        const res = await fetch('/api/admin/surveys', { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+          setSurveys([]);
+          showToast('ลบข้อมูลการประเมินทั้งหมดเรียบร้อยแล้ว', 'info');
+        }
+      } catch {
+        showToast('ไม่สามารถลบข้อมูลการประเมินทั้งหมดได้', 'error');
+      }
     }
   };
 
   // 14. Admin Restore Default Surveys
-  const handleRestoreDefaultSurveys = () => {
+  const handleRestoreDefaultSurveys = async () => {
     if (window.confirm('คุณต้องการคืนค่าข้อมูลประเมินกลับเป็น "ชุดข้อมูลเริ่มต้น" ใช่หรือไม่?')) {
-      setSurveys(INITIAL_SURVEY_RECORDS);
-      setRatings(INITIAL_SURVEY_RECORDS.map(s => s.rating));
-      localStorage.setItem('ubu_surveys_data', JSON.stringify(INITIAL_SURVEY_RECORDS));
-      showToast('คืนค่าข้อมูลแบบประเมินเริ่มต้นเรียบร้อยแล้ว', 'success');
+      try {
+        const res = await fetch('/api/admin/surveys/restore', { method: 'POST' });
+        const data = await res.json();
+        if (data.success && Array.isArray(data.surveys)) {
+          setSurveys(data.surveys);
+          showToast('คืนค่าข้อมูลแบบประเมินเริ่มต้นเรียบร้อยแล้ว', 'success');
+        }
+      } catch {
+        showToast('ไม่สามารถคืนค่าข้อมูลแบบประเมินได้', 'error');
+      }
     }
   };
 
@@ -454,13 +653,7 @@ export default function App() {
           locations={locations}
           isLiveGAS={Boolean(gasUrl)}
           isLoading={isLoading}
-          onRefresh={() => {
-            if (gasUrl) {
-              handleFetchFromGas(gasUrl);
-            } else {
-              showToast('รีเฟรชข้อมูลเรียบร้อยแล้ว', 'info');
-            }
-          }}
+          onRefresh={() => handleFetchFromGas(gasUrl)}
           onOpenConfig={() => setIsConfigModalOpen(true)}
         />
 

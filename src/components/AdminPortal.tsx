@@ -117,6 +117,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [filterDate, setFilterDate] = useState('');
   const [filterLocation, setFilterLocation] = useState('');
   const [filterMinQty, setFilterMinQty] = useState<number | ''>('');
+  const [previewPhoto, setPreviewPhoto] = useState<{ url: string; title: string } | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -362,7 +363,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         'ไซส์ 56 (ชิ้น)': log.size56,
         'จำนวนรวมทั้งหมด (ชิ้น)': total,
         'หมายเหตุ/ข้อความ': log.comment,
-        'รูปภาพหลักฐาน': log.imageUrl || '-',
+        'รูปภาพหลักฐาน': log.imageUrl
+          ? (log.imageUrl.startsWith('data:') ? 'แนบภาพถ่ายแล้ว (ดูได้ในระบบแอดมิน)' : log.imageUrl)
+          : '-',
       };
     });
 
@@ -1300,14 +1303,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </td>
                     <td className="p-4 text-center whitespace-nowrap">
                       {log.imageUrl ? (
-                        <a
-                          href={log.imageUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition inline-block"
+                        <button
+                          type="button"
+                          onClick={() => setPreviewPhoto({
+                            url: log.imageUrl!,
+                            title: `${log.name} — ${log.location} (${log.date})`,
+                          })}
+                          className="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition inline-block cursor-pointer"
                         >
                           👁️ เปิดดูภาพ
-                        </a>
+                        </button>
                       ) : (
                         <span className="text-slate-300 font-mono">-</span>
                       )}
@@ -1672,6 +1677,39 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Photo Preview Lightbox Modal */}
+      {previewPhoto && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs"
+          onClick={() => setPreviewPhoto(null)}
+        >
+          <div
+            className="bg-white border border-slate-200 rounded-3xl max-w-2xl w-full overflow-hidden shadow-2xl animate-in fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50">
+              <div className="text-sm font-bold text-slate-800 truncate pr-4">
+                📸 หลักฐานภาพถ่าย: {previewPhoto.title}
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewPhoto(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200/70 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 bg-slate-950/5 flex items-center justify-center max-h-[75vh] overflow-auto">
+              <img
+                src={previewPhoto.url}
+                alt={previewPhoto.title}
+                className="max-h-[65vh] w-auto rounded-2xl shadow-md border border-slate-200 object-contain"
+              />
+            </div>
           </div>
         </div>
       )}

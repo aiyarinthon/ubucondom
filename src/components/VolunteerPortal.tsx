@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   HeartHandshake, 
   Lock, 
@@ -71,8 +71,15 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
 
   // Form states for location and inventory
   const [selectedLocation, setSelectedLocation] = useState<string>(
-    locations[0]?.name || 'อาคารเฉลิมพระเกียรติ 7 รอบฯ (CLB) ชั้น 1'
+    locations[0]?.name || ''
   );
+
+  useEffect(() => {
+    if (locations.length > 0 && !locations.some(l => l.name === selectedLocation)) {
+      setSelectedLocation(locations[0].name);
+    }
+  }, [locations, selectedLocation]);
+
   const [lubricant, setLubricant] = useState<number>(10);
   const [size49, setSize49] = useState<number>(10);
   const [size52, setSize52] = useState<number>(20);
@@ -86,6 +93,7 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
   const [photoMimeType, setPhotoMimeType] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,25 +145,63 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
     if (!file) return;
 
     setPhotoFileName(file.name);
-    setPhotoMimeType(file.type);
 
     const reader = new FileReader();
     reader.onload = (event) => {
       const result = event.target?.result as string;
-      setPhotoPreview(result);
-      const base64 = result.split(',')[1];
-      setPhotoBase64(base64);
+      const img = new Image();
+      img.onload = () => {
+        const MAX_DIM = 900;
+        let { width, height } = img;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.72);
+          setPhotoPreview(compressedDataUrl);
+          setPhotoMimeType('image/jpeg');
+          setPhotoBase64(compressedDataUrl.split(',')[1]);
+        } else {
+          setPhotoPreview(result);
+          setPhotoMimeType(file.type || 'image/jpeg');
+          setPhotoBase64(result.split(',')[1]);
+        }
+      };
+      img.onerror = () => {
+        setPhotoPreview(result);
+        setPhotoMimeType(file.type || 'image/jpeg');
+        setPhotoBase64(result.split(',')[1]);
+      };
+      img.src = result;
     };
     reader.readAsDataURL(file);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitError(null);
+    setSubmitSuccess(false);
     
     // Validate members
     const invalidMemberIndex = members.findIndex(m => !m.name.trim() || !m.studentId.trim());
     if (invalidMemberIndex !== -1) {
-      alert(`โปรดกรอก "ชื่อ - นามสกุล" และ "รหัสนักศึกษา" ของจิตอาสาลำดับที่ ${invalidMemberIndex + 1} ให้ครบถ้วน`);
+      setSubmitError(`โปรดกรอก "ชื่อ - นามสกุล" และ "รหัสนักศึกษา" ของจิตอาสาลำดับที่ ${invalidMemberIndex + 1} ให้ครบถ้วน`);
+      return;
+    }
+
+    if (!selectedLocation) {
+      setSubmitError('กรุณาเลือกจุดตู้บริการที่นำสินค้าเข้าบรรจุ');
       return;
     }
 
@@ -204,6 +250,8 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
       setSize56(0);
       setPhotoPreview(null);
       setPhotoBase64(null);
+      setPhotoFileName('');
+      setPhotoMimeType('');
       // Keep primary member or reset
       setMembers([
         {
@@ -215,7 +263,7 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
         },
       ]);
     } catch (err: any) {
-      alert(err.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูลจิตอาสา');
+      setSubmitError(err.message || 'เกิดข้อผิดพลาดในการบันทึกข้อมูลจิตอาสา โปรดลองใหม่อีกครั้ง');
     } finally {
       setIsSubmitting(false);
     }
@@ -291,6 +339,21 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
             ออกจากระบบ
           </button>
         </div>
+
+        {submitError && (
+          <div className="p-4 sm:p-5 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between gap-3 text-rose-900 animate-in fade-in">
+            <div className="flex items-center gap-3 text-sm font-bold">
+              <AlertCircle className="w-6 h-6 text-rose-600 shrink-0" />
+              <span>{submitError}</span>
+            </div>
+            <button
+              onClick={() => setSubmitError(null)}
+              className="text-rose-700 hover:text-rose-900 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        )}
 
         {submitSuccess && (
           <div className="p-4 sm:p-5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between gap-3 text-emerald-900 animate-in fade-in">
@@ -520,11 +583,11 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
               />
             </div>
 
-            {/* Photo Upload / Drive Storage */}
+            {/* Photo Upload */}
             <div className="space-y-2">
               <label className="text-xs sm:text-sm font-semibold text-slate-700 flex items-center gap-2">
                 <Camera className="w-4 h-4 text-blue-600" />
-                <span>📸 ถ่ายภาพ/อัพโหลดหลักฐานการเติมสินค้า (จัดเก็บลง Google Drive)</span>
+                <span>📸 ถ่ายภาพ/อัพโหลดหลักฐานการเติมสินค้า</span>
               </label>
 
               <div className="relative border-2 border-dashed border-slate-200 hover:border-slate-300 bg-slate-50 rounded-2xl p-5 text-center transition-colors">
@@ -564,7 +627,7 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
             {isSubmitting ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                <span>⏳ กำลังดำเนินการส่งรูปเข้า Drive และบันทึกข้อมูล...</span>
+                <span>⏳ กำลังบันทึกข้อมูลเข้าสู่ระบบกลาง...</span>
               </>
             ) : (
               <>
