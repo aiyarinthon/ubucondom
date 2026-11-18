@@ -13,7 +13,21 @@ import {
   Settings2,
   Sparkles
 } from 'lucide-react';
-import { SCRIPT_TEMPLATES, ScriptTemplate } from '../data/templates';
+interface ScriptTemplate {
+  id: string;
+  titleTh: string;
+  descriptionTh: string;
+  code: string;
+}
+
+const SCRIPT_TEMPLATES: ScriptTemplate[] = [
+  {
+    id: 'default',
+    titleTh: 'Google Apps Script REST API',
+    descriptionTh: 'สคริปต์มาตรฐานสำหรับเชื่อมต่อ Google Sheets',
+    code: 'var SHEET_NAME = "Sheet1";\nfunction doGet(e) {\n  return ContentService.createTextOutput(JSON.stringify({ success: true })).setMimeType(ContentService.MimeType.JSON);\n}',
+  },
+];
 
 interface ScriptGeneratorViewProps {
   onApplyEndpointUrl?: (url: string) => void;

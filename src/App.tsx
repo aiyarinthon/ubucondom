@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UbuHeader } from './components/UbuHeader';
 import { CampusMapView } from './components/CampusMapView';
 import { VolunteerPortal } from './components/VolunteerPortal';
 import { AdminPortal } from './components/AdminPortal';
 import { GasUrlModal } from './components/GasUrlModal';
 import { UbuLocation, VolunteerLog, VolunteerFormData, SurveyRecord } from './types/ubuCondom';
-import { INITIAL_UBU_LOCATIONS } from './data/ubuData';
+import { DEFAULT_UBU_LOCATIONS } from './data/defaultLocations';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 const MOCK_VOLUNTEER_IDS = new Set(['vol-101', 'vol-102', 'vol-103', 'vol-104', 'vol-105']);
@@ -44,7 +44,7 @@ export default function App() {
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       } catch {}
     }
-    return INITIAL_UBU_LOCATIONS;
+    return DEFAULT_UBU_LOCATIONS;
   });
 
   useEffect(() => {
@@ -108,7 +108,28 @@ export default function App() {
     }, 4000);
   };
 
-  // Sync authoritative state from shared Express server
+  const applyServerSnapshot = useCallback((snapshot: {
+    locations?: UbuLocation[];
+    volunteerLogs?: VolunteerLog[];
+    surveys?: SurveyRecord[];
+    gasUrl?: string;
+  }) => {
+    if (Array.isArray(snapshot.locations) && snapshot.locations.length > 0) {
+      setLocations(snapshot.locations);
+    }
+    if (Array.isArray(snapshot.volunteerLogs)) {
+      setVolunteerLogs(snapshot.volunteerLogs);
+    }
+    if (Array.isArray(snapshot.surveys)) {
+      setSurveys(snapshot.surveys);
+    }
+    if (typeof snapshot.gasUrl === 'string') {
+      setGasUrl(snapshot.gasUrl);
+      localStorage.setItem('ubu_gas_url', snapshot.gasUrl);
+    }
+  }, []);
+
+  // Sync authoritative state from shared Express server (preserving existing data cleanly)
   const fetchServerData = useCallback(async (silent = false) => {
     if (!silent) setIsLoading(true);
     try {
@@ -168,38 +189,14 @@ export default function App() {
             if (bootRes.ok) {
               const bootData = await bootRes.json();
               if (bootData.success) {
-                if (Array.isArray(bootData.locations) && bootData.locations.length > 0) {
-                  setLocations(bootData.locations);
-                }
-                if (Array.isArray(bootData.volunteerLogs)) {
-                  setVolunteerLogs(bootData.volunteerLogs);
-                }
-                if (Array.isArray(bootData.surveys)) {
-                  setSurveys(bootData.surveys);
-                }
-                if (typeof bootData.gasUrl === 'string') {
-                  setGasUrl(bootData.gasUrl);
-                  localStorage.setItem('ubu_gas_url', bootData.gasUrl);
-                }
+                applyServerSnapshot(bootData);
                 return bootData;
               }
             }
           }
         }
 
-        if (Array.isArray(data.locations) && data.locations.length > 0) {
-          setLocations(data.locations);
-        }
-        if (Array.isArray(data.volunteerLogs)) {
-          setVolunteerLogs(data.volunteerLogs);
-        }
-        if (Array.isArray(data.surveys)) {
-          setSurveys(data.surveys);
-        }
-        if (typeof data.gasUrl === 'string') {
-          setGasUrl(data.gasUrl);
-          localStorage.setItem('ubu_gas_url', data.gasUrl);
-        }
+        applyServerSnapshot(data);
       }
       return data;
     } catch (err) {
@@ -210,7 +207,7 @@ export default function App() {
     } finally {
       if (!silent) setIsLoading(false);
     }
-  }, []);
+  }, [applyServerSnapshot]);
 
   // Fetch data from real Google Apps Script if URL provided (and also refresh server store)
   const handleFetchFromGas = useCallback(async (targetUrl = gasUrl) => {
@@ -273,24 +270,95 @@ export default function App() {
     });
   }, []);
 
-  // Re-sync whenever switching tabs or returning to browser window
+  // Live WebSocket connection for instant real-time updates across all clients and tabs
+  const wsRef = useRef<WebSocket | null>(null);
   useEffect(() => {
-    fetchServerData(true);
-  }, [activeTab, fetchServerData]);
+    let isDisposed = false;
+    let reconnectTimer: number | null = null;
+    let retryAttempt = 0;
 
-  useEffect(() => {
-    const handleFocus = () => {
-      fetchServerData(true);
+    const connectWebSocket = () => {
+      if (isDisposed) return;
+
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+      const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        retryAttempt = 0;
+        // Re-verify bootstrap/sync once connected
+        fetchServerData(true);
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if ((msg?.type === 'state:sync' || msg?.type === 'state:init') && msg.data) {
+            // Do not overwrite uninitialized local data with empty server store before bootstrap completes
+            if (msg.data.initialized) {
+              applyServerSnapshot(msg.data);
+            }
+          }
+        } catch {
+          // Ignore invalid WebSocket payloads
+        }
+      };
+
+      socket.onclose = () => {
+        if (wsRef.current === socket) {
+          wsRef.current = null;
+        }
+        if (isDisposed) return;
+        const delayMs = Math.min(10000, 1000 * Math.pow(2, retryAttempt));
+        retryAttempt += 1;
+        reconnectTimer = window.setTimeout(connectWebSocket, delayMs);
+      };
+
+      socket.onerror = () => {
+        socket.close();
+      };
     };
-    window.addEventListener('focus', handleFocus);
-    const interval = setInterval(() => {
-      fetchServerData(true);
-    }, 15000);
+
+    connectWebSocket();
+
+    const handleReconnectCheck = () => {
+      if (document.visibilityState === 'visible') {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'state:request' }));
+        } else {
+          fetchServerData(true);
+        }
+      }
+    };
+
+    window.addEventListener('focus', handleReconnectCheck);
+    window.addEventListener('online', handleReconnectCheck);
+    document.addEventListener('visibilitychange', handleReconnectCheck);
+
     return () => {
-      window.removeEventListener('focus', handleFocus);
-      clearInterval(interval);
+      isDisposed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      window.removeEventListener('focus', handleReconnectCheck);
+      window.removeEventListener('online', handleReconnectCheck);
+      document.removeEventListener('visibilitychange', handleReconnectCheck);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
-  }, [fetchServerData]);
+  }, [applyServerSnapshot, fetchServerData]);
+
+  // Sync latest snapshot when switching tabs as an extra safeguard
+  useEffect(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'state:request' }));
+    } else {
+      fetchServerData(true);
+    }
+  }, [activeTab, fetchServerData]);
 
   // Save GAS URL
   const handleSaveGasUrl = async (newUrl: string) => {
@@ -575,22 +643,6 @@ export default function App() {
     }
   };
 
-  // 11. Admin Restore Default Volunteer Logs
-  const handleRestoreDefaultVolunteerLogs = async () => {
-    if (window.confirm('คุณต้องการคืนค่าประวัติการเติมกลับเป็น "ชุดข้อมูลเริ่มต้น" ใช่หรือไม่?')) {
-      try {
-        const res = await fetch('/api/admin/logs/restore', { method: 'POST' });
-        const data = await res.json();
-        if (data.success && Array.isArray(data.volunteerLogs)) {
-          setVolunteerLogs(data.volunteerLogs);
-          showToast('คืนค่าประวัติการเติมเริ่มต้นเรียบร้อยแล้ว', 'success');
-        }
-      } catch {
-        showToast('ไม่สามารถคืนค่าประวัติเริ่มต้นได้', 'error');
-      }
-    }
-  };
-
   // 12. Admin Delete Single Survey Record
   const handleDeleteSurvey = async (id: string) => {
     try {
@@ -617,22 +669,6 @@ export default function App() {
         }
       } catch {
         showToast('ไม่สามารถลบข้อมูลการประเมินทั้งหมดได้', 'error');
-      }
-    }
-  };
-
-  // 14. Admin Restore Default Surveys
-  const handleRestoreDefaultSurveys = async () => {
-    if (window.confirm('คุณต้องการคืนค่าข้อมูลประเมินกลับเป็น "ชุดข้อมูลเริ่มต้น" ใช่หรือไม่?')) {
-      try {
-        const res = await fetch('/api/admin/surveys/restore', { method: 'POST' });
-        const data = await res.json();
-        if (data.success && Array.isArray(data.surveys)) {
-          setSurveys(data.surveys);
-          showToast('คืนค่าข้อมูลแบบประเมินเริ่มต้นเรียบร้อยแล้ว', 'success');
-        }
-      } catch {
-        showToast('ไม่สามารถคืนค่าข้อมูลแบบประเมินได้', 'error');
       }
     }
   };
@@ -689,13 +725,11 @@ export default function App() {
               onResetDefaultLocations={handleResetDefaultLocations}
               onDeleteVolunteerLog={handleDeleteVolunteerLog}
               onClearAllVolunteerLogs={handleClearAllVolunteerLogs}
-              onRestoreDefaultVolunteerLogs={handleRestoreDefaultVolunteerLogs}
               onAddRefillLog={handleAddRefillLog}
               onBatchImportVolunteerLogs={handleBatchImportVolunteerLogs}
               onClearLocationLogs={handleClearLocationLogs}
               onDeleteSurvey={handleDeleteSurvey}
               onClearAllSurveys={handleClearAllSurveys}
-              onRestoreDefaultSurveys={handleRestoreDefaultSurveys}
               onRefreshData={() => handleFetchFromGas(gasUrl)}
               isLoading={isLoading}
             />

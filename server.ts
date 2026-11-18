@@ -1,12 +1,10 @@
 import express, { Request, Response } from 'express';
+import http from 'http';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import {
-  INITIAL_UBU_LOCATIONS,
-  INITIAL_VOLUNTEER_LOGS,
-  INITIAL_SURVEY_RECORDS,
-} from './src/data/ubuData';
+import { WebSocketServer, WebSocket } from 'ws';
+import { DEFAULT_UBU_LOCATIONS } from './src/data/defaultLocations';
 import type { UbuLocation, VolunteerLog, SurveyRecord } from './src/types/ubuCondom';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,7 +46,7 @@ function getBangkokTimestamp(): string {
 function createInitialStore(): StoreState {
   return {
     initialized: false,
-    locations: INITIAL_UBU_LOCATIONS.map(l => ({ ...l })),
+    locations: DEFAULT_UBU_LOCATIONS.map(l => ({ ...l })),
     volunteerLogs: [],
     surveys: [],
     gasUrl: process.env.GAS_WEBAPP_URL || '',
@@ -68,7 +66,7 @@ function loadStore(): StoreState {
         initialized: Boolean(parsed.initialized),
         locations: Array.isArray(parsed.locations) && parsed.locations.length > 0
           ? parsed.locations
-          : INITIAL_UBU_LOCATIONS.map(l => ({ ...l })),
+          : DEFAULT_UBU_LOCATIONS.map(l => ({ ...l })),
         volunteerLogs: Array.isArray(parsed.volunteerLogs) ? parsed.volunteerLogs : [],
         surveys: Array.isArray(parsed.surveys) ? parsed.surveys : [],
         gasUrl: typeof parsed.gasUrl === 'string' ? parsed.gasUrl : (process.env.GAS_WEBAPP_URL || ''),
@@ -98,6 +96,17 @@ function saveStore(state: StoreState): void {
 }
 
 let store: StoreState = loadStore();
+
+function getPublicState() {
+  return {
+    initialized: store.initialized,
+    locations: store.locations,
+    volunteerLogs: store.volunteerLogs,
+    surveys: store.surveys,
+    gasUrl: store.gasUrl,
+    updatedAt: store.updatedAt,
+  };
+}
 
 function makeLogSignature(log: VolunteerLog): string {
   return [
@@ -145,6 +154,73 @@ const PORT = Number(process.env.PORT) || 3000;
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
+// WebSocket Server for true real-time synchronization across all connected browsers/devices
+const httpServer = http.createServer(app);
+const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+
+interface HeartbeatWebSocket extends WebSocket {
+  isAlive?: boolean;
+}
+
+wss.on('connection', (ws: HeartbeatWebSocket) => {
+  ws.isAlive = true;
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  // Immediately push authoritative server state to newly connected client
+  try {
+    ws.send(JSON.stringify({ type: 'state:init', data: getPublicState() }));
+  } catch {
+    // Ignore send errors on closing socket
+  }
+
+  ws.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      if (msg?.type === 'state:request') {
+        ws.send(JSON.stringify({ type: 'state:sync', data: getPublicState() }));
+      }
+    } catch {
+      // Ignore malformed client messages
+    }
+  });
+});
+
+// Keep-alive heartbeat to prune stale WebSocket connections cleanly
+const wsHeartbeat = setInterval(() => {
+  wss.clients.forEach((client) => {
+    const sock = client as HeartbeatWebSocket;
+    if (sock.isAlive === false) {
+      sock.terminate();
+      return;
+    }
+    sock.isAlive = false;
+    sock.ping();
+  });
+}, 25000);
+
+wss.on('close', () => {
+  clearInterval(wsHeartbeat);
+});
+
+function broadcastState(): void {
+  const message = JSON.stringify({
+    type: 'state:sync',
+    data: getPublicState(),
+  });
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(message);
+      } catch {
+        // Ignore individual client write failures
+      }
+    }
+  });
+}
+
 // =========================================================================
 // Shared Persistent State API (Preserves existing data, never re-seeds mocks)
 // =========================================================================
@@ -152,12 +228,7 @@ app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 app.get('/api/data', (_req: Request, res: Response) => {
   res.json({
     success: true,
-    initialized: store.initialized,
-    locations: store.locations,
-    volunteerLogs: store.volunteerLogs,
-    surveys: store.surveys,
-    gasUrl: store.gasUrl,
-    updatedAt: store.updatedAt,
+    ...getPublicState(),
   });
 });
 
@@ -167,11 +238,7 @@ app.post('/api/bootstrap', (req: Request, res: Response) => {
     return res.json({
       success: true,
       bootstrapped: false,
-      initialized: true,
-      locations: store.locations,
-      volunteerLogs: store.volunteerLogs,
-      surveys: store.surveys,
-      gasUrl: store.gasUrl,
+      ...getPublicState(),
     });
   }
 
@@ -193,15 +260,12 @@ app.post('/api/bootstrap', (req: Request, res: Response) => {
 
   store.initialized = true;
   saveStore(store);
+  broadcastState();
 
   return res.json({
     success: true,
     bootstrapped: true,
-    initialized: true,
-    locations: store.locations,
-    volunteerLogs: store.volunteerLogs,
-    surveys: store.surveys,
-    gasUrl: store.gasUrl,
+    ...getPublicState(),
   });
 });
 
@@ -218,6 +282,7 @@ app.post('/api/report-empty', async (req: Request, res: Response) => {
   );
   store.initialized = true;
   saveStore(store);
+  broadcastState();
 
   const gasRes = store.gasUrl
     ? await forwardToGas(store.gasUrl, { action: 'reportOut', locationName })
@@ -246,6 +311,7 @@ app.post('/api/survey', async (req: Request, res: Response) => {
   store.surveys = [newSurvey, ...store.surveys];
   store.initialized = true;
   saveStore(store);
+  broadcastState();
 
   if (store.gasUrl) {
     await forwardToGas(store.gasUrl, {
@@ -313,6 +379,7 @@ app.post('/api/volunteer', async (req: Request, res: Response) => {
   store.volunteerLogs = [newLog, ...store.volunteerLogs];
   store.initialized = true;
   saveStore(store);
+  broadcastState();
 
   return res.json({
     success: true,
@@ -334,6 +401,7 @@ app.post('/api/admin/locations/toggle', async (req: Request, res: Response) => {
   );
   store.initialized = true;
   saveStore(store);
+  broadcastState();
 
   if (store.gasUrl) {
     await forwardToGas(store.gasUrl, {
@@ -365,6 +433,7 @@ app.post('/api/admin/locations', (req: Request, res: Response) => {
   store.locations = [created, ...store.locations];
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, location: created, locations: store.locations });
 });
 
@@ -379,6 +448,7 @@ app.put('/api/admin/locations/:id', (req: Request, res: Response) => {
   );
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, locations: store.locations });
 });
 
@@ -388,14 +458,16 @@ app.delete('/api/admin/locations/:id', (req: Request, res: Response) => {
   store.locations = store.locations.filter(loc => String(loc.id) !== String(targetId));
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, locations: store.locations });
 });
 
-// Admin: Reset default locations
+// Admin: Reset default locations (preserves volunteerLogs and surveys)
 app.post('/api/admin/locations/reset', (_req: Request, res: Response) => {
-  store.locations = INITIAL_UBU_LOCATIONS.map(l => ({ ...l }));
+  store.locations = DEFAULT_UBU_LOCATIONS.map(l => ({ ...l }));
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, locations: store.locations });
 });
 
@@ -414,6 +486,7 @@ app.post('/api/admin/logs/add', (req: Request, res: Response) => {
   store.volunteerLogs = [newLog, ...store.volunteerLogs];
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, locations: store.locations, volunteerLogs: store.volunteerLogs });
 });
 
@@ -445,9 +518,10 @@ app.post('/api/admin/logs/batch', (req: Request, res: Response) => {
       refilledLocations.has(loc.name) ? { ...loc, status: 'มีอยู่', lastUpdated: now } : loc
     );
     store.volunteerLogs = [...uniqueNewLogs, ...store.volunteerLogs];
+    store.initialized = true;
+    saveStore(store);
+    broadcastState();
   }
-  store.initialized = true;
-  saveStore(store);
   return res.json({
     success: true,
     addedCount: uniqueNewLogs.length,
@@ -463,6 +537,7 @@ app.delete('/api/admin/logs/:id', (req: Request, res: Response) => {
   store.volunteerLogs = store.volunteerLogs.filter(log => log.id !== targetId);
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, volunteerLogs: store.volunteerLogs });
 });
 
@@ -472,6 +547,7 @@ app.post('/api/admin/logs/clear-location', (req: Request, res: Response) => {
   store.volunteerLogs = store.volunteerLogs.filter(log => log.location !== locationName);
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, volunteerLogs: store.volunteerLogs });
 });
 
@@ -480,14 +556,7 @@ app.delete('/api/admin/logs', (_req: Request, res: Response) => {
   store.volunteerLogs = [];
   store.initialized = true;
   saveStore(store);
-  return res.json({ success: true, volunteerLogs: store.volunteerLogs });
-});
-
-// Admin: Restore default volunteer logs (explicit admin button only)
-app.post('/api/admin/logs/restore', (_req: Request, res: Response) => {
-  store.volunteerLogs = INITIAL_VOLUNTEER_LOGS.map(v => ({ ...v }));
-  store.initialized = true;
-  saveStore(store);
+  broadcastState();
   return res.json({ success: true, volunteerLogs: store.volunteerLogs });
 });
 
@@ -497,6 +566,7 @@ app.delete('/api/admin/surveys/:id', (req: Request, res: Response) => {
   store.surveys = store.surveys.filter(s => s.id !== targetId);
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, surveys: store.surveys });
 });
 
@@ -505,14 +575,7 @@ app.delete('/api/admin/surveys', (_req: Request, res: Response) => {
   store.surveys = [];
   store.initialized = true;
   saveStore(store);
-  return res.json({ success: true, surveys: store.surveys });
-});
-
-// Admin: Restore default surveys (explicit admin button only)
-app.post('/api/admin/surveys/restore', (_req: Request, res: Response) => {
-  store.surveys = INITIAL_SURVEY_RECORDS.map(s => ({ ...s }));
-  store.initialized = true;
-  saveStore(store);
+  broadcastState();
   return res.json({ success: true, surveys: store.surveys });
 });
 
@@ -522,6 +585,7 @@ app.post('/api/config/gas-url', (req: Request, res: Response) => {
   store.gasUrl = typeof gasUrl === 'string' ? gasUrl.trim() : '';
   store.initialized = true;
   saveStore(store);
+  broadcastState();
   return res.json({ success: true, gasUrl: store.gasUrl });
 });
 
@@ -598,7 +662,7 @@ app.all('/api/gas-proxy', async (req: Request, res: Response) => {
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), clients: wss.clients.size });
 });
 
 async function startServer() {
@@ -616,8 +680,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT} (HTTP + WebSocket /ws)`);
   });
 }
 

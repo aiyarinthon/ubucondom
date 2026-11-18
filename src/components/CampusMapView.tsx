@@ -64,6 +64,8 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
   const markersGroupRef = useRef<L.LayerGroup | null>(null);
   const userLocationLayerRef = useRef<L.LayerGroup | null>(null);
   const markerMapRef = useRef<Record<string | number, L.Marker>>({});
+  const isMountedRef = useRef(true);
+  const fullscreenTimerRef = useRef<number | null>(null);
 
   const [mapLayer, setMapLayer] = useState<MapLayerType>('roadmap');
   const [searchTerm, setSearchTerm] = useState('');
@@ -129,14 +131,31 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
     setMapLayer(layerType);
   }, []);
 
+  // Safely call Leaflet invalidateSize only when container & map panes are mounted
+  const safeInvalidateMapSize = useCallback((map: L.Map | null) => {
+    if (!map || !isMountedRef.current || mapInstanceRef.current !== map) return;
+    const container = mapContainerRef.current;
+    if (!container || !container.isConnected) return;
+    if (!(map as any)._mapPane) return;
+    try {
+      map.invalidateSize({ animate: false });
+    } catch {
+      // Ignore if Leaflet pane is mid-teardown
+    }
+  }, []);
+
   // Initialize Map
   useEffect(() => {
-    if (!mapContainerRef.current || mapInstanceRef.current) return;
+    isMountedRef.current = true;
+    const container = mapContainerRef.current;
+    if (!container || mapInstanceRef.current) return;
+
+    let isCancelled = false;
 
     // Centered at Ubon Ratchathani University
     const ubuCenter: L.LatLngExpression = [15.1190, 104.9060];
-    
-    const map = L.map(mapContainerRef.current, {
+
+    const map = L.map(container, {
       center: ubuCenter,
       zoom: 16,
       zoomControl: false, // We use custom Google Maps style controls
@@ -161,15 +180,62 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
     markersGroupRef.current = markersGroup;
     userLocationLayerRef.current = userLayer;
 
-    setTimeout(() => {
-      map.invalidateSize();
+    const initTimer = window.setTimeout(() => {
+      if (!isCancelled) {
+        safeInvalidateMapSize(map);
+      }
     }, 250);
 
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        if (!isCancelled) {
+          safeInvalidateMapSize(map);
+        }
+      });
+      resizeObserver.observe(container);
+    }
+
     return () => {
-      map.remove();
+      isCancelled = true;
+      isMountedRef.current = false;
+      window.clearTimeout(initTimer);
+      if (fullscreenTimerRef.current !== null) {
+        window.clearTimeout(fullscreenTimerRef.current);
+        fullscreenTimerRef.current = null;
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+      markerMapRef.current = {};
+      markersGroupRef.current = null;
+      userLocationLayerRef.current = null;
+      tileLayerRef.current = null;
       mapInstanceRef.current = null;
+      try {
+        map.remove();
+      } catch {
+        // Ignore teardown errors if DOM node already detached
+      }
     };
-  }, []);
+  }, [safeInvalidateMapSize]);
+
+  // Recalculate map dimensions smoothly when fullscreen toggles
+  useEffect(() => {
+    if (fullscreenTimerRef.current !== null) {
+      window.clearTimeout(fullscreenTimerRef.current);
+    }
+    fullscreenTimerRef.current = window.setTimeout(() => {
+      safeInvalidateMapSize(mapInstanceRef.current);
+      fullscreenTimerRef.current = null;
+    }, 200);
+    return () => {
+      if (fullscreenTimerRef.current !== null) {
+        window.clearTimeout(fullscreenTimerRef.current);
+        fullscreenTimerRef.current = null;
+      }
+    };
+  }, [isFullscreen, safeInvalidateMapSize]);
 
   // Handle GPS location request (Like Google Maps "My Location" button)
   const handleLocateUser = () => {
@@ -183,11 +249,12 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        if (!isMountedRef.current) return;
         const { latitude, longitude, accuracy } = position.coords;
         setUserCoords({ lat: latitude, lng: longitude });
         setIsLocatingUser(false);
 
-        if (mapInstanceRef.current && userLocationLayerRef.current) {
+        if (mapInstanceRef.current && userLocationLayerRef.current && (mapInstanceRef.current as any)._mapPane) {
           userLocationLayerRef.current.clearLayers();
 
           // Blue pulsating accuracy circle
@@ -485,12 +552,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
               </button>
 
               <button
-                onClick={() => {
-                  setIsFullscreen(!isFullscreen);
-                  setTimeout(() => {
-                    mapInstanceRef.current?.invalidateSize();
-                  }, 200);
-                }}
+                onClick={() => setIsFullscreen((prev) => !prev)}
                 className="p-2 text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-2xl border border-slate-200 transition-colors cursor-pointer"
                 title={isFullscreen ? 'ย่อแผนที่' : 'ขยายเต็มจอ'}
               >

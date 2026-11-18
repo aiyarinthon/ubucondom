@@ -12,8 +12,9 @@ import {
   BarChart3, 
   Layers
 } from 'lucide-react';
-import { GasEndpointConfig } from '../types/gas';
-import { SAMPLE_DATASETS } from '../data/sampleDatasets';
+import { DatasetPreset, GasEndpointConfig } from '../types/gas';
+
+const SAMPLE_DATASETS: DatasetPreset[] = [];
 
 interface HeaderProps {
   activeTab: 'table' | 'kanban' | 'analytics' | 'scripts' | 'debugger';
