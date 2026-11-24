@@ -222,8 +222,16 @@ interface HeartbeatWebSocket extends WebSocket {
 }
 
 if (wss) {
+  wss.on('error', (err) => {
+    console.error('WebSocketServer error:', err);
+  });
+
   wss.on('connection', (ws: HeartbeatWebSocket) => {
     ws.isAlive = true;
+
+    ws.on('error', () => {
+      // Prevent unhandled socket error crashes
+    });
 
     ws.on('pong', () => {
       ws.isAlive = true;
@@ -356,7 +364,9 @@ app.get('/api/events', (req: Request, res: Response) => {
   res.flushHeaders?.();
 
   sseClients.add(res);
-  res.write(`retry: 1000\n: connected\n\nevent: state:init\ndata: ${JSON.stringify(getPublicState())}\n\n`);
+  // 2KB comment padding forces reverse proxies (Cloud Run / Nginx / GFE) to flush SSE stream immediately
+  const proxyPadding = `: ${' '.repeat(2048)}\n\n`;
+  res.write(`retry: 1000\n${proxyPadding}event: state:init\ndata: ${JSON.stringify(getPublicState())}\n\n`);
 
   req.on('close', () => {
     sseClients.delete(res);

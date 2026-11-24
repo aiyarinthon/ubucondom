@@ -117,6 +117,8 @@ export default function App() {
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const wsConnectedRef = useRef<boolean>(false);
   const sseConnectedRef = useRef<boolean>(false);
+  const httpSyncedRef = useRef<boolean>(false);
+  const syncErrorCountRef = useRef<number>(0);
   const realtimeModeRef = useRef<'websocket+sse' | 'polling'>('websocket+sse');
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
@@ -127,9 +129,14 @@ export default function App() {
   }, []);
 
   const updateConnectionStatus = useCallback(() => {
-    if (!navigator.onLine) {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
       setRealtimeStatus('offline');
-    } else if (wsConnectedRef.current || sseConnectedRef.current || realtimeModeRef.current === 'polling') {
+    } else if (
+      wsConnectedRef.current ||
+      sseConnectedRef.current ||
+      httpSyncedRef.current ||
+      realtimeModeRef.current === 'polling'
+    ) {
       setRealtimeStatus('connected');
     } else {
       setRealtimeStatus('reconnecting');
@@ -170,11 +177,13 @@ export default function App() {
     }
     if (snapshot.realtimeMode === 'polling' || snapshot.realtimeMode === 'websocket+sse') {
       realtimeModeRef.current = snapshot.realtimeMode;
-      updateConnectionStatus();
     }
     if (typeof snapshot.updatedAt === 'string' && snapshot.updatedAt) {
       setLastUpdated(snapshot.updatedAt);
     }
+    httpSyncedRef.current = true;
+    syncErrorCountRef.current = 0;
+    updateConnectionStatus();
 
     if (
       options.notifyRemote &&
@@ -283,6 +292,11 @@ export default function App() {
       }
       return data;
     } catch (err) {
+      syncErrorCountRef.current += 1;
+      if (syncErrorCountRef.current >= 2) {
+        httpSyncedRef.current = false;
+        updateConnectionStatus();
+      }
       if (!silent) {
         console.error('Failed to sync with server:', err);
       }
@@ -290,7 +304,7 @@ export default function App() {
     } finally {
       if (!silent) setIsLoading(false);
     }
-  }, [applyServerSnapshot]);
+  }, [applyServerSnapshot, updateConnectionStatus]);
 
   // Fetch data from real Google Apps Script if URL provided (and also refresh server store)
   const handleFetchFromGas = useCallback(async (targetUrl = gasUrl) => {
@@ -397,15 +411,23 @@ export default function App() {
             sseConnectedRef.current = false;
             eventSource?.close();
             eventSource = null;
+          } else {
+            sseConnectedRef.current = true;
           }
           if (data?.initialized || lastRevisionRef.current === 0) {
             applyServerSnapshot(data);
+          } else {
+            httpSyncedRef.current = true;
+            updateConnectionStatus();
           }
         } catch {}
       });
       eventSource.addEventListener('state:sync', (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
+          if (data?.realtimeMode !== 'polling') {
+            sseConnectedRef.current = true;
+          }
           applyServerSnapshot(data, { notifyRemote: true, relayToBroadcastChannel: true });
         } catch {}
       });
@@ -421,16 +443,22 @@ export default function App() {
 
     // Primary WebSocket (/ws)
     const connectWebSocket = () => {
-      if (isDisposed) return;
+      if (isDisposed || realtimeModeRef.current === 'polling') return;
 
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-      const socket = new WebSocket(wsUrl);
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        return;
+      }
       wsRef.current = socket;
 
       socket.onopen = () => {
         retryAttempt = 0;
         wsConnectedRef.current = true;
+        httpSyncedRef.current = true;
         updateConnectionStatus();
         fetchServerData(true);
 
@@ -448,6 +476,9 @@ export default function App() {
           if (msg?.type === 'state:init' && msg.data) {
             if (msg.data.initialized || lastRevisionRef.current === 0) {
               applyServerSnapshot(msg.data);
+            } else {
+              httpSyncedRef.current = true;
+              updateConnectionStatus();
             }
           } else if (msg?.type === 'state:sync' && msg.data) {
             applyServerSnapshot(msg.data, { notifyRemote: true, relayToBroadcastChannel: true });
@@ -467,24 +498,27 @@ export default function App() {
           window.clearInterval(pingTimer);
           pingTimer = null;
         }
-        if (isDisposed || realtimeModeRef.current === 'polling' || retryAttempt >= 3) {
+        if (isDisposed || realtimeModeRef.current === 'polling') {
           return;
         }
-        const delayMs = Math.min(4000, 300 * Math.pow(2, retryAttempt));
+        // Self-healing backoff: fast retries initially, then check every 10s without giving up
+        const delayMs = retryAttempt < 4 ? 500 * Math.pow(2, retryAttempt) : 10000;
         retryAttempt += 1;
         reconnectTimer = window.setTimeout(connectWebSocket, delayMs);
       };
 
       socket.onerror = () => {
-        socket.close();
+        try {
+          socket.close();
+        } catch {}
       };
     };
 
     connectWebSocket();
 
-    // Sync safety fallback timer (active whenever WS/SSE are unavailable, e.g., Vercel serverless mode)
+    // Sync safety fallback timer (runs whenever WS/SSE are unavailable or in polling mode)
     const fallbackTimer = window.setInterval(() => {
-      if (!isDisposed && !wsConnectedRef.current && (!sseConnectedRef.current || realtimeModeRef.current === 'polling') && navigator.onLine) {
+      if (!isDisposed && (!wsConnectedRef.current && (!sseConnectedRef.current || realtimeModeRef.current === 'polling')) && navigator.onLine) {
         fetchServerData(true);
       }
     }, 3500);
@@ -496,6 +530,14 @@ export default function App() {
           wsRef.current.send(JSON.stringify({ type: 'state:request' }));
         } else {
           fetchServerData(true);
+          if (!wsRef.current && realtimeModeRef.current !== 'polling') {
+            retryAttempt = 0;
+            if (reconnectTimer !== null) {
+              window.clearTimeout(reconnectTimer);
+              reconnectTimer = null;
+            }
+            connectWebSocket();
+          }
         }
       }
     };
@@ -503,6 +545,7 @@ export default function App() {
     const handleOffline = () => {
       wsConnectedRef.current = false;
       sseConnectedRef.current = false;
+      httpSyncedRef.current = false;
       setRealtimeStatus('offline');
     };
 
