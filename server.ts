@@ -4,7 +4,6 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
-import { DEFAULT_UBU_LOCATIONS } from './src/data/defaultLocations';
 import type {
   UbuLocation,
   VolunteerLog,
@@ -16,7 +15,11 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.join(__dirname, 'data');
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const BUNDLED_STORE_FILE = path.join(process.cwd(), 'data', 'ubu-store.json');
+const DATA_DIR = IS_VERCEL
+  ? path.join('/tmp', 'ubu-condom-data')
+  : path.join(process.cwd(), 'data');
 const STORE_FILE = path.join(DATA_DIR, 'ubu-store.json');
 
 const MOCK_VOLUNTEER_IDS = new Set(['vol-101', 'vol-102', 'vol-103', 'vol-104', 'vol-105']);
@@ -55,7 +58,7 @@ function createInitialStore(): StoreState {
   return {
     initialized: false,
     revision: 1,
-    locations: DEFAULT_UBU_LOCATIONS.map(l => ({ ...l })),
+    locations: [],
     volunteerLogs: [],
     surveys: [],
     gasUrl: process.env.GAS_WEBAPP_URL || '',
@@ -71,9 +74,7 @@ function parseStoreJson(raw: string): StoreState {
   return {
     initialized: Boolean(parsed.initialized),
     revision: Number.isFinite(Number(parsed.revision)) ? Number(parsed.revision) : 1,
-    locations: Array.isArray(parsed.locations) && parsed.locations.length > 0
-      ? parsed.locations
-      : DEFAULT_UBU_LOCATIONS.map(l => ({ ...l })),
+    locations: Array.isArray(parsed.locations) ? parsed.locations : [],
     volunteerLogs: Array.isArray(parsed.volunteerLogs) ? parsed.volunteerLogs : [],
     surveys: Array.isArray(parsed.surveys) ? parsed.surveys : [],
     gasUrl: typeof parsed.gasUrl === 'string' ? parsed.gasUrl : (process.env.GAS_WEBAPP_URL || ''),
@@ -90,6 +91,12 @@ function loadStore(): StoreState {
       const raw = fs.readFileSync(STORE_FILE, 'utf-8');
       lastWrittenRaw = raw;
       return parseStoreJson(raw);
+    }
+    if (IS_VERCEL && fs.existsSync(BUNDLED_STORE_FILE)) {
+      const raw = fs.readFileSync(BUNDLED_STORE_FILE, 'utf-8');
+      const seeded = parseStoreJson(raw);
+      saveStore(seeded, false);
+      return seeded;
     }
   } catch (err) {
     console.error('Failed to load store file, initializing clean store:', err);
@@ -129,6 +136,7 @@ function getPublicState(lastEvent?: RealtimeEventInfo | null): ServerStateSnapsh
     initialized: store.initialized,
     serverInstanceId: SERVER_INSTANCE_ID,
     revision: store.revision,
+    realtimeMode: IS_VERCEL ? 'polling' : 'websocket+sse',
     locations: store.locations,
     volunteerLogs: store.volunteerLogs,
     surveys: store.surveys,
@@ -202,68 +210,72 @@ const PORT = Number(process.env.PORT) || 3000;
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
-// WebSocket + SSE Server for instant real-time synchronization across all connected browsers/devices
-const httpServer = http.createServer(app);
-const wss = new WebSocketServer({ server: httpServer, path: '/ws', perMessageDeflate: false });
+// WebSocket + SSE Server for instant real-time synchronization (disabled on Vercel serverless)
+const httpServer = IS_VERCEL ? null : http.createServer(app);
+const wss = httpServer
+  ? new WebSocketServer({ server: httpServer, path: '/ws', perMessageDeflate: false })
+  : null;
 const sseClients = new Set<Response>();
 
 interface HeartbeatWebSocket extends WebSocket {
   isAlive?: boolean;
 }
 
-wss.on('connection', (ws: HeartbeatWebSocket) => {
-  ws.isAlive = true;
-
-  ws.on('pong', () => {
+if (wss) {
+  wss.on('connection', (ws: HeartbeatWebSocket) => {
     ws.isAlive = true;
-  });
 
-  // Immediately push authoritative server state to newly connected client
-  try {
-    ws.send(JSON.stringify({ type: 'state:init', data: getPublicState() }));
-  } catch {
-    // Ignore send errors on closing socket
-  }
+    ws.on('pong', () => {
+      ws.isAlive = true;
+    });
 
-  ws.on('message', (raw) => {
-    ws.isAlive = true;
+    // Immediately push authoritative server state to newly connected client
     try {
-      const msg = JSON.parse(raw.toString());
-      if (msg?.type === 'state:request') {
-        ws.send(JSON.stringify({ type: 'state:sync', data: getPublicState() }));
-      } else if (msg?.type === 'ping') {
-        ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+      ws.send(JSON.stringify({ type: 'state:init', data: getPublicState() }));
+    } catch {
+      // Ignore send errors on closing socket
+    }
+
+    ws.on('message', (raw) => {
+      ws.isAlive = true;
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg?.type === 'state:request') {
+          ws.send(JSON.stringify({ type: 'state:sync', data: getPublicState() }));
+        } else if (msg?.type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+        }
+      } catch {
+        // Ignore malformed client messages
       }
-    } catch {
-      // Ignore malformed client messages
-    }
-  });
-});
-
-// Keep-alive heartbeat to prune stale WebSocket & SSE connections cleanly
-const wsHeartbeat = setInterval(() => {
-  wss.clients.forEach((client) => {
-    const sock = client as HeartbeatWebSocket;
-    if (sock.isAlive === false) {
-      sock.terminate();
-      return;
-    }
-    sock.isAlive = false;
-    sock.ping();
+    });
   });
 
-  sseClients.forEach((res) => {
-    try {
-      res.write(': keepalive\n\n');
-    } catch {
-      sseClients.delete(res);
-    }
-  });
-}, 20000);
+  // Keep-alive heartbeat to prune stale WebSocket & SSE connections cleanly
+  const wsHeartbeat = setInterval(() => {
+    wss.clients.forEach((client) => {
+      const sock = client as HeartbeatWebSocket;
+      if (sock.isAlive === false) {
+        sock.terminate();
+        return;
+      }
+      sock.isAlive = false;
+      sock.ping();
+    });
 
-wss.on('close', () => {
-  clearInterval(wsHeartbeat);
-});
+    sseClients.forEach((res) => {
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        sseClients.delete(res);
+      }
+    });
+  }, 20000);
+
+  wss.on('close', () => {
+    clearInterval(wsHeartbeat);
+  });
+}
 
 function broadcastState(action?: string, message?: string, clientId?: string): void {
   const eventMeta: RealtimeEventInfo | null =
@@ -277,20 +289,23 @@ function broadcastState(action?: string, message?: string, clientId?: string): v
       : null;
 
   const snapshot = getPublicState(eventMeta);
-  const wsPayload = JSON.stringify({
-    type: 'state:sync',
-    data: snapshot,
-  });
 
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(wsPayload);
-      } catch {
-        // Ignore individual client write failures
+  if (wss) {
+    const wsPayload = JSON.stringify({
+      type: 'state:sync',
+      data: snapshot,
+    });
+
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(wsPayload);
+        } catch {
+          // Ignore individual client write failures
+        }
       }
-    }
-  });
+    });
+  }
 
   const ssePayload = `event: state:sync\ndata: ${JSON.stringify(snapshot)}\n\n`;
   sseClients.forEach((res) => {
@@ -303,21 +318,23 @@ function broadcastState(action?: string, message?: string, clientId?: string): v
 }
 
 // Watch external modifications to data/ubu-store.json so manual edits also push live immediately
-fs.watchFile(STORE_FILE, { interval: 1000 }, () => {
-  if (isWritingStore) return;
-  try {
-    if (!fs.existsSync(STORE_FILE)) return;
-    const raw = fs.readFileSync(STORE_FILE, 'utf-8');
-    if (raw === lastWrittenRaw) return;
-    lastWrittenRaw = raw;
-    const nextStore = parseStoreJson(raw);
-    nextStore.revision = Math.max(nextStore.revision, (store.revision || 0) + 1);
-    store = nextStore;
-    broadcastState('external:sync', 'อัปเดตข้อมูลล่าสุดจากฐานข้อมูลกลางแล้ว');
-  } catch {
-    // Ignore transient partial read
-  }
-});
+if (!IS_VERCEL) {
+  fs.watchFile(STORE_FILE, { interval: 1000 }, () => {
+    if (isWritingStore) return;
+    try {
+      if (!fs.existsSync(STORE_FILE)) return;
+      const raw = fs.readFileSync(STORE_FILE, 'utf-8');
+      if (raw === lastWrittenRaw) return;
+      lastWrittenRaw = raw;
+      const nextStore = parseStoreJson(raw);
+      nextStore.revision = Math.max(nextStore.revision, (store.revision || 0) + 1);
+      store = nextStore;
+      broadcastState('external:sync', 'อัปเดตข้อมูลล่าสุดจากฐานข้อมูลกลางแล้ว');
+    } catch {
+      // Ignore transient partial read
+    }
+  });
+}
 
 // =========================================================================
 // Server-Sent Events (SSE) Real-Time Stream (Automatic fallback + backup)
@@ -326,8 +343,16 @@ fs.watchFile(STORE_FILE, { interval: 1000 }, () => {
 app.get('/api/events', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
+
+  if (IS_VERCEL) {
+    // Vercel serverless functions cannot keep indefinite SSE streams open; push snapshot & close cleanly
+    res.write(`retry: 3500\nevent: state:init\ndata: ${JSON.stringify(getPublicState())}\n\n`);
+    res.end();
+    return;
+  }
+
+  res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
   sseClients.add(res);
@@ -616,16 +641,6 @@ app.delete('/api/admin/locations/:id', (req: Request, res: Response) => {
   return res.json({ success: true, ...getPublicState() });
 });
 
-// Admin: Reset default locations (preserves volunteerLogs and surveys)
-app.post('/api/admin/locations/reset', (req: Request, res: Response) => {
-  const clientId = getClientIdFromReq(req);
-  store.locations = DEFAULT_UBU_LOCATIONS.map(l => ({ ...l }));
-  store.initialized = true;
-  saveStore(store);
-  broadcastState('location:reset', 'รีเซ็ตจุดบริการกลับเป็น 15 จุดเริ่มต้นแล้ว', clientId);
-  return res.json({ success: true, ...getPublicState() });
-});
-
 // Admin: Add single refill log
 app.post('/api/admin/logs/add', (req: Request, res: Response) => {
   const newLogData = req.body || {};
@@ -828,12 +843,15 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     revision: store.revision,
-    clients: wss.clients.size,
+    realtimeMode: IS_VERCEL ? 'polling' : 'websocket+sse',
+    clients: wss ? wss.clients.size : 0,
     sseClients: sseClients.size,
   });
 });
 
 async function startServer() {
+  if (!httpServer) return;
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -842,9 +860,9 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
+    app.use(express.static(path.join(process.cwd(), 'dist')));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(process.cwd(), 'dist', 'index.html'));
     });
   }
 
@@ -853,4 +871,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!IS_VERCEL) {
+  startServer();
+}
+
+export default app;

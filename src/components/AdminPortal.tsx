@@ -297,9 +297,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   }, [locations, logs]);
 
   const maxReplenished = Math.max(1, ...locationStats.map(s => s.total));
-  const topLocation = locationStats[0] || { name: 'ไม่มีข้อมูล', total: 0 };
+  const topLocation = locationStats.find(s => s.total > 0) || { name: 'ยังไม่มีข้อมูล', total: 0 };
 
-  // Ratings distribution & CSAT
+  // Ratings distribution & CSAT (strictly from real submitted surveys, zero fake defaults)
   const ratingsDist = useMemo(() => {
     const starCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
     ratings.forEach(r => {
@@ -307,22 +307,22 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         starCounts[r]++;
       }
     });
-    const total = ratings.length || 1;
+    const total = ratings.length;
     return [5, 4, 3, 2, 1].map(star => ({
       star,
       count: starCounts[star] || 0,
-      percentage: Math.round(((starCounts[star] || 0) / total) * 100),
+      percentage: total > 0 ? Math.round(((starCounts[star] || 0) / total) * 100) : 0,
     }));
   }, [ratings]);
 
   const averageRating = useMemo(() => {
-    if (ratings.length === 0) return 0;
+    if (ratings.length === 0) return '0.0';
     const sum = ratings.reduce((acc, v) => acc + v, 0);
     return (sum / ratings.length).toFixed(1);
   }, [ratings]);
 
   const highSatisfactionPercentage = useMemo(() => {
-    if (ratings.length === 0) return 100;
+    if (ratings.length === 0) return 0;
     const highCount = ratings.filter(r => r >= 4).length;
     return Math.round((highCount / ratings.length) * 100);
   }, [ratings]);
@@ -502,14 +502,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     // 3. Satisfaction Summary Sheet
     const starCounts = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
     ratings.forEach(r => { if (starCounts[r as keyof typeof starCounts] !== undefined) starCounts[r as keyof typeof starCounts]++; });
+    const hasRatings = ratings.length > 0;
     const totalRatings = ratings.length || 1;
+    const pct = (count: number) => hasRatings ? `${Math.round((count / totalRatings) * 100)}%` : '0%';
     const satisfactionRows = [
-      { 'ระดับความพึงพอใจ': '5 ดาว (ดีมากที่สุด)', 'จำนวนผู้ประเมิน (คน)': starCounts[5], 'สัดส่วน (%)': `${Math.round((starCounts[5] / totalRatings) * 100)}%` },
-      { 'ระดับความพึงพอใจ': '4 ดาว (ดีมาก)', 'จำนวนผู้ประเมิน (คน)': starCounts[4], 'สัดส่วน (%)': `${Math.round((starCounts[4] / totalRatings) * 100)}%` },
-      { 'ระดับความพึงพอใจ': '3 ดาว (ปานกลาง)', 'จำนวนผู้ประเมิน (คน)': starCounts[3], 'สัดส่วน (%)': `${Math.round((starCounts[3] / totalRatings) * 100)}%` },
-      { 'ระดับความพึงพอใจ': '2 ดาว (พอใช้)', 'จำนวนผู้ประเมิน (คน)': starCounts[2], 'สัดส่วน (%)': `${Math.round((starCounts[2] / totalRatings) * 100)}%` },
-      { 'ระดับความพึงพอใจ': '1 ดาว (ควรปรับปรุง)', 'จำนวนผู้ประเมิน (คน)': starCounts[1], 'สัดส่วน (%)': `${Math.round((starCounts[1] / totalRatings) * 100)}%` },
-      { 'ระดับความพึงพอใจ': 'คะแนนเฉลี่ยรวม (CSAT)', 'จำนวนผู้ประเมิน (คน)': `${(ratings.reduce((a, b) => a + b, 0) / (ratings.length || 1)).toFixed(1)} / 5.0 ดาว`, 'สัดส่วน (%)': `พึงพอใจระดับดี-ดีมาก ${Math.round(((starCounts[5] + starCounts[4]) / totalRatings) * 100)}%` },
+      { 'ระดับความพึงพอใจ': '5 ดาว (ดีมากที่สุด)', 'จำนวนผู้ประเมิน (คน)': starCounts[5], 'สัดส่วน (%)': pct(starCounts[5]) },
+      { 'ระดับความพึงพอใจ': '4 ดาว (ดีมาก)', 'จำนวนผู้ประเมิน (คน)': starCounts[4], 'สัดส่วน (%)': pct(starCounts[4]) },
+      { 'ระดับความพึงพอใจ': '3 ดาว (ปานกลาง)', 'จำนวนผู้ประเมิน (คน)': starCounts[3], 'สัดส่วน (%)': pct(starCounts[3]) },
+      { 'ระดับความพึงพอใจ': '2 ดาว (พอใช้)', 'จำนวนผู้ประเมิน (คน)': starCounts[2], 'สัดส่วน (%)': pct(starCounts[2]) },
+      { 'ระดับความพึงพอใจ': '1 ดาว (ควรปรับปรุง)', 'จำนวนผู้ประเมิน (คน)': starCounts[1], 'สัดส่วน (%)': pct(starCounts[1]) },
+      { 'ระดับความพึงพอใจ': 'คะแนนเฉลี่ยรวม (CSAT)', 'จำนวนผู้ประเมิน (คน)': `${hasRatings ? (ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1) : '0.0'} / 5.0 ดาว`, 'สัดส่วน (%)': `พึงพอใจระดับดี-ดีมาก ${pct(starCounts[5] + starCounts[4])}` },
     ];
     const wsSatisfaction = XLSX.utils.json_to_sheet(satisfactionRows);
     XLSX.utils.book_append_sheet(workbook, wsSatisfaction, 'สรุปผลประเมินความพอใจ');
@@ -812,7 +814,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             ? 'bg-gradient-to-r from-blue-600 to-blue-700'
                             : 'bg-gradient-to-r from-blue-500 to-indigo-500'
                         }`}
-                        style={{ width: `${Math.max(percentage, 4)}%` }}
+                        style={{ width: item.total > 0 ? `${Math.max(percentage, 4)}%` : '0%' }}
                       />
                     </div>
                   </div>
@@ -958,7 +960,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
                       <div
                         className={`h-full ${starColor} rounded-full transition-all duration-500`}
-                        style={{ width: `${Math.max(item.percentage, 2)}%` }}
+                        style={{ width: item.percentage > 0 ? `${Math.max(item.percentage, 3)}%` : '0%' }}
                       />
                     </div>
                   </div>

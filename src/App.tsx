@@ -16,7 +16,6 @@ import {
   SurveyRecord,
   ServerStateSnapshot,
 } from './types/ubuCondom';
-import { DEFAULT_UBU_LOCATIONS } from './data/defaultLocations';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 const MOCK_VOLUNTEER_IDS = new Set(['vol-101', 'vol-102', 'vol-103', 'vol-104', 'vol-105']);
@@ -44,16 +43,16 @@ export default function App() {
     return localStorage.getItem('ubu_gas_url') || '';
   });
 
-  // State for UBU Condom Application (cached in localStorage, synced with server API)
+  // State for UBU Condom Application (cached in localStorage, synced with real server API)
   const [locations, setLocations] = useState<UbuLocation[]>(() => {
     const saved = localStorage.getItem('ubu_locations_data');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       } catch {}
     }
-    return DEFAULT_UBU_LOCATIONS;
+    return [];
   });
 
   useEffect(() => {
@@ -118,6 +117,7 @@ export default function App() {
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const wsConnectedRef = useRef<boolean>(false);
   const sseConnectedRef = useRef<boolean>(false);
+  const realtimeModeRef = useRef<'websocket+sse' | 'polling'>('websocket+sse');
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToast({ message, type });
@@ -129,7 +129,7 @@ export default function App() {
   const updateConnectionStatus = useCallback(() => {
     if (!navigator.onLine) {
       setRealtimeStatus('offline');
-    } else if (wsConnectedRef.current || sseConnectedRef.current) {
+    } else if (wsConnectedRef.current || sseConnectedRef.current || realtimeModeRef.current === 'polling') {
       setRealtimeStatus('connected');
     } else {
       setRealtimeStatus('reconnecting');
@@ -155,7 +155,7 @@ export default function App() {
       lastRevisionRef.current = incomingRev;
     }
 
-    if (Array.isArray(snapshot.locations) && snapshot.locations.length > 0) {
+    if (Array.isArray(snapshot.locations)) {
       setLocations(snapshot.locations);
     }
     if (Array.isArray(snapshot.volunteerLogs)) {
@@ -167,6 +167,10 @@ export default function App() {
     if (typeof snapshot.gasUrl === 'string') {
       setGasUrl(snapshot.gasUrl);
       localStorage.setItem('ubu_gas_url', snapshot.gasUrl);
+    }
+    if (snapshot.realtimeMode === 'polling' || snapshot.realtimeMode === 'websocket+sse') {
+      realtimeModeRef.current = snapshot.realtimeMode;
+      updateConnectionStatus();
     }
     if (typeof snapshot.updatedAt === 'string' && snapshot.updatedAt) {
       setLastUpdated(snapshot.updatedAt);
@@ -203,7 +207,7 @@ export default function App() {
         // Ignore storage errors
       }
     }
-  }, [showToast]);
+  }, [showToast, updateConnectionStatus]);
 
   // Sync authoritative state from shared Express server (preserving existing data cleanly)
   const fetchServerData = useCallback(async (silent = false) => {
@@ -339,8 +343,11 @@ export default function App() {
     }
   }, [gasUrl, fetchServerData, showToast]);
 
-  // Initial authoritative load from server (never let external sheet overwrite live empty statuses on load)
+  // Clear legacy mock rating keys & load authoritative current state from server
   useEffect(() => {
+    try {
+      localStorage.removeItem('ubu_ratings_data');
+    } catch {}
     fetchServerData(true);
   }, [fetchServerData]);
 
@@ -386,6 +393,11 @@ export default function App() {
       eventSource.addEventListener('state:init', (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
+          if (data?.realtimeMode === 'polling') {
+            sseConnectedRef.current = false;
+            eventSource?.close();
+            eventSource = null;
+          }
           if (data?.initialized || lastRevisionRef.current === 0) {
             applyServerSnapshot(data);
           }
@@ -399,6 +411,10 @@ export default function App() {
       });
       eventSource.onerror = () => {
         sseConnectedRef.current = false;
+        if (realtimeModeRef.current === 'polling') {
+          eventSource?.close();
+          eventSource = null;
+        }
         updateConnectionStatus();
       };
     }
@@ -451,7 +467,9 @@ export default function App() {
           window.clearInterval(pingTimer);
           pingTimer = null;
         }
-        if (isDisposed) return;
+        if (isDisposed || realtimeModeRef.current === 'polling' || retryAttempt >= 3) {
+          return;
+        }
         const delayMs = Math.min(4000, 300 * Math.pow(2, retryAttempt));
         retryAttempt += 1;
         reconnectTimer = window.setTimeout(connectWebSocket, delayMs);
@@ -464,9 +482,9 @@ export default function App() {
 
     connectWebSocket();
 
-    // Disconnected-only safety fallback timer (only runs when neither WS nor SSE is open)
+    // Sync safety fallback timer (active whenever WS/SSE are unavailable, e.g., Vercel serverless mode)
     const fallbackTimer = window.setInterval(() => {
-      if (!isDisposed && !wsConnectedRef.current && !sseConnectedRef.current && navigator.onLine) {
+      if (!isDisposed && !wsConnectedRef.current && (!sseConnectedRef.current || realtimeModeRef.current === 'polling') && navigator.onLine) {
         fetchServerData(true);
       }
     }, 3500);
@@ -731,23 +749,6 @@ export default function App() {
     }
   };
 
-  // 8. Admin Reset Default Locations
-  const handleResetDefaultLocations = async () => {
-    try {
-      const res = await fetch('/api/admin/locations/reset', {
-        method: 'POST',
-        headers: { 'x-client-id': CLIENT_ID },
-      });
-      const data = await res.json();
-      if (data.success) {
-        applyServerSnapshot(data, { relayToBroadcastChannel: true });
-        showToast('คืนค่าจุดติดตั้งกลับเป็น 15 จุดเริ่มต้นของ ม.อุบลฯ เรียบร้อยแล้ว', 'info');
-      }
-    } catch {
-      showToast('ไม่สามารถคืนค่าจุดติดตั้งได้', 'error');
-    }
-  };
-
   // 9. Admin Delete Single Volunteer Log
   const handleDeleteVolunteerLog = async (id: string) => {
     setVolunteerLogs(prev => prev.filter(log => log.id !== id));
@@ -952,7 +953,6 @@ export default function App() {
               onAddLocation={handleAddLocation}
               onEditLocation={handleEditLocation}
               onDeleteLocation={handleDeleteLocation}
-              onResetDefaultLocations={handleResetDefaultLocations}
               onDeleteVolunteerLog={handleDeleteVolunteerLog}
               onClearAllVolunteerLogs={handleClearAllVolunteerLogs}
               onAddRefillLog={handleAddRefillLog}

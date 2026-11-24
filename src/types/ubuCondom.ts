@@ -64,6 +64,7 @@ export interface ServerStateSnapshot {
   initialized: boolean;
   serverInstanceId?: string;
   revision: number;
+  realtimeMode?: 'websocket+sse' | 'polling';
   locations: UbuLocation[];
   volunteerLogs: VolunteerLog[];
   surveys: SurveyRecord[];
