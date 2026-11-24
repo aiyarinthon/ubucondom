@@ -122,10 +122,12 @@ function saveStore(state: StoreState, bumpRevision = true): void {
 }
 
 let store: StoreState = loadStore();
+const SERVER_INSTANCE_ID = `srv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
 function getPublicState(lastEvent?: RealtimeEventInfo | null): ServerStateSnapshot {
   return {
     initialized: store.initialized,
+    serverInstanceId: SERVER_INSTANCE_ID,
     revision: store.revision,
     locations: store.locations,
     volunteerLogs: store.volunteerLogs,
@@ -134,6 +136,16 @@ function getPublicState(lastEvent?: RealtimeEventInfo | null): ServerStateSnapsh
     updatedAt: store.updatedAt,
     ...(lastEvent ? { lastEvent } : {}),
   };
+}
+
+function isMatchingLocation(loc: UbuLocation, locationName?: string, locationId?: string | number): boolean {
+  if (locationId !== undefined && locationId !== null && String(locationId).trim() !== '') {
+    if (String(loc.id) === String(locationId)) return true;
+  }
+  if (typeof locationName === 'string' && locationName.trim() !== '') {
+    return loc.name.trim() === locationName.trim();
+  }
+  return false;
 }
 
 function getClientIdFromReq(req: Request): string | undefined {
@@ -192,7 +204,7 @@ app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
 // WebSocket + SSE Server for instant real-time synchronization across all connected browsers/devices
 const httpServer = http.createServer(app);
-const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+const wss = new WebSocketServer({ server: httpServer, path: '/ws', perMessageDeflate: false });
 const sseClients = new Set<Response>();
 
 interface HeartbeatWebSocket extends WebSocket {
@@ -319,7 +331,7 @@ app.get('/api/events', (req: Request, res: Response) => {
   res.flushHeaders?.();
 
   sseClients.add(res);
-  res.write(`event: state:init\ndata: ${JSON.stringify(getPublicState())}\n\n`);
+  res.write(`retry: 1000\n: connected\n\nevent: state:init\ndata: ${JSON.stringify(getPublicState())}\n\n`);
 
   req.on('close', () => {
     sseClients.delete(res);
@@ -377,28 +389,40 @@ app.post('/api/bootstrap', (req: Request, res: Response) => {
 
 // Student/Public: Report condom dispenser empty (instant update & broadcast)
 app.post('/api/report-empty', (req: Request, res: Response) => {
-  const { locationName } = req.body || {};
+  const { locationName, locationId } = req.body || {};
   const clientId = getClientIdFromReq(req);
-  if (!locationName || typeof locationName !== 'string') {
+  if ((!locationName || typeof locationName !== 'string' || !locationName.trim()) && locationId === undefined) {
     return res.status(400).json({ success: false, error: 'กรุณาระบุชื่อจุดบริการ' });
   }
 
+  let matchedName = typeof locationName === 'string' ? locationName.trim() : '';
+  let matched = false;
   const now = getBangkokTimestamp();
-  store.locations = store.locations.map(loc =>
-    loc.name === locationName ? { ...loc, status: 'หมดแล้ว', lastUpdated: now } : loc
-  );
+  store.locations = store.locations.map(loc => {
+    if (isMatchingLocation(loc, locationName, locationId)) {
+      matched = true;
+      matchedName = loc.name;
+      return { ...loc, status: 'หมดแล้ว', lastUpdated: now };
+    }
+    return loc;
+  });
+
+  if (!matched) {
+    return res.status(404).json({ success: false, error: `ไม่พบจุดบริการ "${matchedName || locationId}" ในระบบ` });
+  }
+
   store.initialized = true;
   saveStore(store);
-  broadcastState('report:empty', `จุด "${locationName}" ถูกแจ้งว่าหมดแล้ว`, clientId);
+  broadcastState('report:empty', `จุด "${matchedName}" ถูกแจ้งว่าหมดแล้ว`, clientId);
 
   if (store.gasUrl) {
-    void forwardToGas(store.gasUrl, { action: 'reportOut', locationName });
+    void forwardToGas(store.gasUrl, { action: 'reportOut', locationName: matchedName });
   }
 
   return res.json({
     success: true,
     ...getPublicState(),
-    message: `อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`,
+    message: `อัปเดตสถานะจุด "${matchedName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`,
   });
 });
 
@@ -505,22 +529,34 @@ app.post('/api/volunteer', (req: Request, res: Response) => {
 
 // Admin: Toggle location status
 app.post('/api/admin/locations/toggle', (req: Request, res: Response) => {
-  const { locationName, currentStatus } = req.body || {};
+  const { locationName, locationId, currentStatus } = req.body || {};
   const clientId = getClientIdFromReq(req);
   const nextStatus = currentStatus === 'มีอยู่' ? 'หมดแล้ว' : 'มีอยู่';
   const now = getBangkokTimestamp();
 
-  store.locations = store.locations.map(loc =>
-    loc.name === locationName ? { ...loc, status: nextStatus, lastUpdated: now } : loc
-  );
+  let matchedName = typeof locationName === 'string' ? locationName.trim() : '';
+  let matched = false;
+  store.locations = store.locations.map(loc => {
+    if (isMatchingLocation(loc, locationName, locationId)) {
+      matched = true;
+      matchedName = loc.name;
+      return { ...loc, status: nextStatus, lastUpdated: now };
+    }
+    return loc;
+  });
+
+  if (!matched) {
+    return res.status(404).json({ success: false, error: `ไม่พบจุดบริการ "${matchedName || locationId}"` });
+  }
+
   store.initialized = true;
   saveStore(store);
-  broadcastState('location:toggled', `แอดมินปรับสถานะ "${locationName}" เป็น '${nextStatus}'`, clientId);
+  broadcastState('location:toggled', `แอดมินปรับสถานะ "${matchedName}" เป็น '${nextStatus}'`, clientId);
 
   if (store.gasUrl) {
     void forwardToGas(store.gasUrl, {
       action: 'toggleStatus',
-      locationName,
+      locationName: matchedName,
       newStatus: nextStatus,
     });
   }

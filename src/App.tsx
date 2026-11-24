@@ -113,6 +113,7 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   const lastRevisionRef = useRef<number>(0);
+  const lastServerInstanceIdRef = useRef<string>('');
   const lastToastEventKeyRef = useRef<string>('');
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const wsConnectedRef = useRef<boolean>(false);
@@ -139,6 +140,11 @@ export default function App() {
     snapshot: Partial<ServerStateSnapshot>,
     options: { notifyRemote?: boolean; relayToBroadcastChannel?: boolean } = {}
   ) => {
+    if (snapshot.serverInstanceId && snapshot.serverInstanceId !== lastServerInstanceIdRef.current) {
+      lastServerInstanceIdRef.current = snapshot.serverInstanceId;
+      lastRevisionRef.current = 0;
+    }
+
     const incomingRev = Number(snapshot.revision || 0);
     if (incomingRev > 0 && lastRevisionRef.current > 0 && incomingRev < lastRevisionRef.current) {
       return;
@@ -179,11 +185,22 @@ export default function App() {
       }
     }
 
-    if (options.relayToBroadcastChannel && broadcastChannelRef.current && incomingRev > 0) {
+    if (options.relayToBroadcastChannel && incomingRev > 0) {
+      if (broadcastChannelRef.current) {
+        try {
+          broadcastChannelRef.current.postMessage({ type: 'state:sync', data: snapshot });
+        } catch {
+          // Ignore BroadcastChannel serialization errors
+        }
+      }
       try {
-        broadcastChannelRef.current.postMessage({ type: 'state:sync', data: snapshot });
+        localStorage.setItem('ubu_realtime_pulse', JSON.stringify({
+          rev: incomingRev,
+          srv: snapshot.serverInstanceId || '',
+          ts: Date.now(),
+        }));
       } catch {
-        // Ignore BroadcastChannel serialization errors
+        // Ignore storage errors
       }
     }
   }, [showToast]);
@@ -322,20 +339,16 @@ export default function App() {
     }
   }, [gasUrl, fetchServerData, showToast]);
 
-  // Initial load from server + optional GAS
+  // Initial authoritative load from server (never let external sheet overwrite live empty statuses on load)
   useEffect(() => {
-    fetchServerData(true).then((serverData) => {
-      const activeGasUrl = (serverData && serverData.gasUrl) || gasUrl;
-      if (activeGasUrl) {
-        handleFetchFromGas(activeGasUrl);
-      }
-    });
-  }, []);
+    fetchServerData(true);
+  }, [fetchServerData]);
 
   // Multi-channel instant Real-Time Synchronization:
   // 1) WebSocket (/ws) with fast reconnect & heartbeat
   // 2) Server-Sent Events (/api/events) instant push backup
-  // 3) Cross-tab BroadcastChannel (<1ms local browser tab sync)
+  // 3) Cross-tab BroadcastChannel + localStorage storage event (<1ms local tab sync)
+  // 4) Safety fallback check ONLY while both WS and SSE are temporarily disconnected
   const wsRef = useRef<WebSocket | null>(null);
   useEffect(() => {
     let isDisposed = false;
@@ -353,6 +366,14 @@ export default function App() {
         }
       };
     }
+
+    // Cross-tab storage event backup (catches updates across tabs even without BroadcastChannel)
+    const handleStorageSync = (e: StorageEvent) => {
+      if (e.key === 'ubu_realtime_pulse' || e.key === 'ubu_locations_data') {
+        fetchServerData(true);
+      }
+    };
+    window.addEventListener('storage', handleStorageSync);
 
     // Server-Sent Events (SSE) stream
     let eventSource: EventSource | null = null;
@@ -373,9 +394,7 @@ export default function App() {
       eventSource.addEventListener('state:sync', (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
-          if (data?.initialized) {
-            applyServerSnapshot(data, { notifyRemote: true, relayToBroadcastChannel: true });
-          }
+          applyServerSnapshot(data, { notifyRemote: true, relayToBroadcastChannel: true });
         } catch {}
       });
       eventSource.onerror = () => {
@@ -404,7 +423,7 @@ export default function App() {
           if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: 'ping' }));
           }
-        }, 18000);
+        }, 15000);
       };
 
       socket.onmessage = (event) => {
@@ -415,9 +434,7 @@ export default function App() {
               applyServerSnapshot(msg.data);
             }
           } else if (msg?.type === 'state:sync' && msg.data) {
-            if (msg.data.initialized) {
-              applyServerSnapshot(msg.data, { notifyRemote: true, relayToBroadcastChannel: true });
-            }
+            applyServerSnapshot(msg.data, { notifyRemote: true, relayToBroadcastChannel: true });
           }
         } catch {
           // Ignore invalid WebSocket payloads
@@ -435,7 +452,7 @@ export default function App() {
           pingTimer = null;
         }
         if (isDisposed) return;
-        const delayMs = Math.min(5000, 300 * Math.pow(2, retryAttempt));
+        const delayMs = Math.min(4000, 300 * Math.pow(2, retryAttempt));
         retryAttempt += 1;
         reconnectTimer = window.setTimeout(connectWebSocket, delayMs);
       };
@@ -446,6 +463,13 @@ export default function App() {
     };
 
     connectWebSocket();
+
+    // Disconnected-only safety fallback timer (only runs when neither WS nor SSE is open)
+    const fallbackTimer = window.setInterval(() => {
+      if (!isDisposed && !wsConnectedRef.current && !sseConnectedRef.current && navigator.onLine) {
+        fetchServerData(true);
+      }
+    }, 3500);
 
     const handleReconnectCheck = () => {
       updateConnectionStatus();
@@ -473,6 +497,8 @@ export default function App() {
       isDisposed = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (pingTimer !== null) window.clearInterval(pingTimer);
+      window.clearInterval(fallbackTimer);
+      window.removeEventListener('storage', handleStorageSync);
       window.removeEventListener('focus', handleReconnectCheck);
       window.removeEventListener('online', handleReconnectCheck);
       window.removeEventListener('offline', handleOffline);
@@ -527,8 +553,12 @@ export default function App() {
   };
 
   // 1. Report Condom Out (User)
-  const handleReportEmpty = async (locationName: string) => {
-    setLocations(prev => prev.map(loc => loc.name === locationName ? { ...loc, status: 'หมดแล้ว' } : loc));
+  const handleReportEmpty = async (locationName: string, locationId?: string | number) => {
+    setLocations(prev => prev.map(loc =>
+      (locationId !== undefined && String(loc.id) === String(locationId)) || loc.name.trim() === locationName.trim()
+        ? { ...loc, status: 'หมดแล้ว' }
+        : loc
+    ));
     try {
       const response = await fetch('/api/report-empty', {
         method: 'POST',
@@ -536,16 +566,17 @@ export default function App() {
           'Content-Type': 'application/json',
           'x-client-id': CLIENT_ID,
         },
-        body: JSON.stringify({ locationName }),
+        body: JSON.stringify({ locationName, locationId }),
       });
       const resJson = await response.json();
-      if (resJson.success) {
-        applyServerSnapshot(resJson, { relayToBroadcastChannel: true });
+      if (!response.ok || !resJson.success) {
+        throw new Error(resJson.error || 'อัปเดตสถานะไม่สำเร็จ');
       }
+      applyServerSnapshot(resJson, { relayToBroadcastChannel: true });
       showToast(resJson.message || `อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
-    } catch {
+    } catch (err: any) {
       await fetchServerData(true);
-      showToast('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์กลางได้ โปรดลองใหม่อีกครั้ง', 'error');
+      showToast(err?.message || 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์กลางได้ โปรดลองใหม่อีกครั้ง', 'error');
     }
   };
 

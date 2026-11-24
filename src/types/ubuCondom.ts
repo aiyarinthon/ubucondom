@@ -62,6 +62,7 @@ export interface RealtimeEventInfo {
 
 export interface ServerStateSnapshot {
   initialized: boolean;
+  serverInstanceId?: string;
   revision: number;
   locations: UbuLocation[];
   volunteerLogs: VolunteerLog[];

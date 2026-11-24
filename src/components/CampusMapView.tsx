@@ -22,7 +22,7 @@ import { UbuLocation } from '../types/ubuCondom';
 
 interface CampusMapViewProps {
   locations: UbuLocation[];
-  onReportEmpty: (locationName: string) => Promise<void>;
+  onReportEmpty: (locationName: string, locationId?: string | number) => Promise<void>;
   onSubmitSurvey: (rating: number, feedback: string) => Promise<void>;
   isLoading?: boolean;
 }
@@ -76,6 +76,8 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
     [locations, selectedLocationId]
   );
   const [reportingLocation, setReportingLocation] = useState<string | null>(null);
+  const [confirmEmptyTarget, setConfirmEmptyTarget] = useState<{ id?: string | number; name: string } | null>(null);
+  const [surveyError, setSurveyError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // User GPS state
@@ -337,16 +339,21 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
     });
   };
 
-  const handleReportEmptyClick = useCallback(async (name: string) => {
-    if (window.confirm(`คุณต้องการส่งรายงานข้อมูล "ถุงยางอนามัยหมด" ณ จุดตู้บริการ:\n${name} ใช่หรือไม่?`)) {
-      setReportingLocation(name);
-      try {
-        await onReportEmpty(name);
-      } finally {
-        setReportingLocation(null);
-      }
+  const handleRequestReportEmpty = useCallback((locOrName: { id?: string | number; name: string }) => {
+    setConfirmEmptyTarget({ id: locOrName.id, name: locOrName.name });
+  }, []);
+
+  const handleConfirmReportEmpty = useCallback(async () => {
+    if (!confirmEmptyTarget) return;
+    const { name, id } = confirmEmptyTarget;
+    setReportingLocation(name);
+    try {
+      await onReportEmpty(name, id);
+      setConfirmEmptyTarget(null);
+    } finally {
+      setReportingLocation(null);
     }
-  }, [onReportEmpty]);
+  }, [confirmEmptyTarget, onReportEmpty]);
 
   // Update Markers smoothly in-place on Location, Selection, or UserCoords change (keeps open popups live!)
   useEffect(() => {
@@ -356,85 +363,102 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
 
     const activeIds = new Set<string>();
 
-    const buildPopupNode = (loc: UbuLocation, isAvailable: boolean, distString: string | null) => {
+    const buildPopupHtml = (loc: UbuLocation, isAvailable: boolean, distString: string | null) => {
       const gmapsDirUrl = `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}`;
-      const popupDiv = document.createElement('div');
-      popupDiv.className = 'font-sans p-3 min-w-[260px] max-w-[300px] text-slate-800 bg-white rounded-2xl';
-      popupDiv.innerHTML = `
-        <div class="flex items-start justify-between gap-2 mb-2 pb-2 border-b border-slate-100">
-          <div>
-            <div class="text-[11px] font-bold tracking-wider uppercase text-blue-600 mb-0.5">
-              ${loc.zone || 'มหาวิทยาลัยอุบลราชธานี'}
+      return `
+        <div class="font-sans p-3 min-w-[260px] max-w-[300px] text-slate-800 bg-white rounded-2xl">
+          <div class="flex items-start justify-between gap-2 mb-2 pb-2 border-b border-slate-100">
+            <div>
+              <div class="text-[11px] font-bold tracking-wider uppercase text-blue-600 mb-0.5">
+                ${loc.zone || 'มหาวิทยาลัยอุบลราชธานี'}
+              </div>
+              <h4 class="font-black text-sm text-slate-900 leading-snug">${loc.name}</h4>
             </div>
-            <h4 class="font-black text-sm text-slate-900 leading-snug">${loc.name}</h4>
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold shrink-0 ${
+              isAvailable ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+            }">
+              ${isAvailable ? '● มีของ' : '● หมดแล้ว'}
+            </span>
           </div>
-          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold shrink-0 ${
-            isAvailable ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-          }">
-            ${isAvailable ? '● มีของ' : '● หมดแล้ว'}
-          </span>
-        </div>
 
-        <p class="text-xs text-slate-500 mb-2 flex items-start gap-1.5">
-          <span class="text-slate-400 mt-0.5">📍</span>
-          <span>${loc.landmark || 'จุดบริการถุงยางอนามัยฟรี ม.อุบลฯ'}</span>
-        </p>
+          <p class="text-xs text-slate-500 mb-2 flex items-start gap-1.5">
+            <span class="text-slate-400 mt-0.5">📍</span>
+            <span>${loc.landmark || 'จุดบริการถุงยางอนามัยฟรี ม.อุบลฯ'}</span>
+          </p>
 
-        ${loc.lastUpdated ? `
-          <div class="text-[11px] text-slate-400 font-mono mb-2.5">
-            🕒 อัปเดตล่าสุด: ${loc.lastUpdated}
-          </div>
-        ` : ''}
+          ${loc.lastUpdated ? `
+            <div class="text-[11px] text-slate-400 font-mono mb-2.5">
+              🕒 อัปเดตล่าสุด: ${loc.lastUpdated}
+            </div>
+          ` : ''}
 
-        ${distString ? `
-          <div class="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50/80 border border-blue-200/80 rounded-xl text-xs font-bold text-blue-700 mb-3">
-            <span>🧭</span>
-            <span>ห่างจากตำแหน่งคุณ: ${distString}</span>
-          </div>
-        ` : ''}
+          ${distString ? `
+            <div class="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50/80 border border-blue-200/80 rounded-xl text-xs font-bold text-blue-700 mb-3">
+              <span>🧭</span>
+              <span>ห่างจากตำแหน่งคุณ: ${distString}</span>
+            </div>
+          ` : ''}
 
-        <div class="space-y-2">
-          <!-- Google Maps Direct Navigation Link -->
-          <a
-            href="${gmapsDirUrl}"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 px-3 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer no-underline"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="3 11 22 2 13 21 11 13 3 11"/>
-            </svg>
-            <span>นำทางด้วย Google Maps</span>
-          </a>
-
-          ${isAvailable ? `
-            <button
-              id="report-empty-btn-${loc.id}"
-              class="w-full bg-slate-50 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 text-slate-700 hover:text-rose-600 font-bold text-xs py-2 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+          <div class="space-y-2">
+            <!-- Google Maps Direct Navigation Link -->
+            <a
+              href="${gmapsDirUrl}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 px-3 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer no-underline"
             >
-              <span>⚠️ แจ้งจุดนี้ของหมด</span>
-            </button>
-          ` : `
-            <div class="text-center py-2 bg-rose-50 border border-rose-100 text-rose-700 rounded-xl text-xs font-bold">
-              รอจิตอาสานำของเข้าเติม
-            </div>
-          `}
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="3 11 22 2 13 21 11 13 3 11"/>
+              </svg>
+              <span>นำทางด้วย Google Maps</span>
+            </a>
+
+            ${isAvailable ? `
+              <button
+                type="button"
+                data-report-empty-btn="true"
+                class="w-full bg-slate-50 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 text-slate-700 hover:text-rose-600 font-bold text-xs py-2 px-3 rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <span>⚠️ แจ้งจุดนี้ของหมด</span>
+              </button>
+            ` : `
+              <div class="text-center py-2 bg-rose-50 border border-rose-100 text-rose-700 rounded-xl text-xs font-bold">
+                รอจิตอาสานำของเข้าเติม
+              </div>
+            `}
+          </div>
         </div>
       `;
+    };
 
-      const bindButton = () => {
-        if (isAvailable) {
-          const btn = popupDiv.querySelector(`#report-empty-btn-${loc.id}`) as HTMLButtonElement | null;
-          if (btn) {
-            btn.onclick = () => {
-              mapInstanceRef.current?.closePopup();
-              handleReportEmptyClick(loc.name);
-            };
-          }
+    const bindMarkerInteractions = (marker: L.Marker, loc: UbuLocation) => {
+      marker.off('click').on('click', () => {
+        setSelectedLocationId(loc.id);
+      });
+      marker.off('popupopen').on('popupopen', () => {
+        const popupEl = marker.getPopup()?.getElement();
+        const btn = popupEl?.querySelector('[data-report-empty-btn="true"]') as HTMLButtonElement | null;
+        if (btn) {
+          btn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            mapInstanceRef.current?.closePopup();
+            handleRequestReportEmpty({ id: loc.id, name: loc.name });
+          };
         }
-      };
-      bindButton();
-      return popupDiv;
+      });
+      if (marker.getPopup()?.isOpen()) {
+        const popupEl = marker.getPopup()?.getElement();
+        const btn = popupEl?.querySelector('[data-report-empty-btn="true"]') as HTMLButtonElement | null;
+        if (btn) {
+          btn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            mapInstanceRef.current?.closePopup();
+            handleRequestReportEmpty({ id: loc.id, name: loc.name });
+          };
+        }
+      }
     };
 
     locations.forEach((loc) => {
@@ -448,25 +472,23 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
 
       const distMeters = userCoords ? calculateDistanceMeters(userCoords.lat, userCoords.lng, loc.lat, loc.lng) : null;
       const distString = distMeters !== null ? formatDistance(distMeters) : null;
-      const popupNode = buildPopupNode(loc, isAvailable, distString);
+      const popupHtml = buildPopupHtml(loc, isAvailable, distString);
 
       const existingMarker = markerMapRef.current[key];
       if (existingMarker) {
         existingMarker.setLatLng([loc.lat, loc.lng]);
         existingMarker.setIcon(customPin);
-        existingMarker.setPopupContent(popupNode);
-        existingMarker.off('click').on('click', () => {
-          setSelectedLocationId(loc.id);
-        });
+        existingMarker.setPopupContent(popupHtml);
+        if (existingMarker.getPopup()?.isOpen()) {
+          existingMarker.getPopup()?.update();
+        }
+        bindMarkerInteractions(existingMarker, loc);
       } else {
         const marker = L.marker([loc.lat, loc.lng], { icon: customPin })
-          .bindPopup(popupNode, { maxWidth: 320 })
+          .bindPopup(popupHtml, { maxWidth: 320 })
           .addTo(markersGroup);
 
-        marker.on('click', () => {
-          setSelectedLocationId(loc.id);
-        });
-
+        bindMarkerInteractions(marker, loc);
         markerMapRef.current[key] = marker;
       }
     });
@@ -478,7 +500,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
         delete markerMapRef.current[key];
       }
     });
-  }, [locations, selectedLocationId, userCoords, handleReportEmptyClick]);
+  }, [locations, selectedLocationId, userCoords, handleRequestReportEmpty]);
 
   const handleZoomToLocation = (loc: UbuLocation) => {
     setSelectedLocationId(loc.id);
@@ -506,8 +528,9 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
 
   const handleSurveySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSurveyError(null);
     if (surveyRating === 0) {
-      alert('โปรดเลือกระดับความพึงพอใจ (1 - 5 ดาว)');
+      setSurveyError('โปรดเลือกระดับความพึงพอใจ (1 - 5 ดาว)');
       return;
     }
 
@@ -522,7 +545,7 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
       setSurveySubmitted(true);
       setSurveyFeedback('');
     } catch (err: any) {
-      alert(err.message || 'ไม่สามารถส่งแบบประเมินได้');
+      setSurveyError(err.message || 'ไม่สามารถส่งแบบประเมินได้');
     } finally {
       setIsSubmittingSurvey(false);
     }
@@ -780,14 +803,16 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
 
                           {isAvailable && (
                             <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleReportEmptyClick(loc.name);
+                                handleRequestReportEmpty({ id: loc.id, name: loc.name });
                               }}
                               title="แจ้งของหมด"
-                              className="text-slate-400 hover:text-rose-600 p-1 rounded-lg hover:bg-rose-50 transition-colors"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors cursor-pointer"
                             >
-                              <AlertTriangle className="w-3.5 h-3.5" />
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>แจ้งหมด</span>
                             </button>
                           )}
                         </div>
@@ -860,6 +885,12 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
                   className="w-full text-sm px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white"
                 />
 
+                {surveyError && (
+                  <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+                    ⚠️ {surveyError}
+                  </p>
+                )}
+
                 <button
                   type="submit"
                   disabled={isSubmittingSurvey || surveyRating === 0}
@@ -882,6 +913,56 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* In-App Confirmation Modal for Reporting Empty Dispenser (never blocked by iframe) */}
+      {confirmEmptyTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4 animate-in fade-in">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-extrabold text-slate-900">
+                  ยืนยันแจ้งข้อมูล &quot;ถุงยางอนามัยหมด&quot;
+                </h3>
+                <p className="text-xs sm:text-sm text-slate-600">
+                  คุณต้องการแจ้งว่าจุดบริการ <span className="font-bold text-rose-700">{confirmEmptyTarget.name}</span> ของหมดแล้วใช่หรือไม่? ระบบจะอัปเดตสถานะบนแผนที่และแจ้งจิตอาสาแบบ Real-time ทันที
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={Boolean(reportingLocation)}
+                onClick={() => setConfirmEmptyTarget(null)}
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs sm:text-sm rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(reportingLocation)}
+                onClick={handleConfirmReportEmpty}
+                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md shadow-rose-600/20 transition-all cursor-pointer flex items-center gap-2 disabled:opacity-50"
+              >
+                {reportingLocation ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>กำลังส่งรายงาน...</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>ยืนยันแจ้งของหมด</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

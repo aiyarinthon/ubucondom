@@ -194,8 +194,8 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
         </div>
 
         {/* Empty / Needs refill */}
-        <div className="bg-white border border-slate-200/90 p-5 sm:p-6 rounded-3xl custom-shadow flex items-center justify-between">
-          <div>
+        <div className="bg-white border border-slate-200/90 p-5 sm:p-6 rounded-3xl custom-shadow flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
             <p className="text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wider">
               จุดที่ของหมด (ต้องเติม)
             </p>
@@ -207,10 +207,16 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
                 {emptyCount > 0 ? 'รอจิตอาสานำของเข้าเติม' : 'ทุกจุดมีของพร้อมบริการ'}
               </span>
             </div>
+            {emptyCount > 0 && (
+              <p className="text-[11px] font-bold text-rose-600 truncate mt-1" title={locations.filter(l => l.status === 'หมดแล้ว').map(l => l.name).join(', ')}>
+                ⚠️ {locations.filter(l => l.status === 'หมดแล้ว').slice(0, 2).map(l => l.name).join(', ')}
+                {emptyCount > 2 ? ` (+${emptyCount - 2} จุด)` : ''}
+              </p>
+            )}
           </div>
-          <div className={`w-13 h-13 rounded-2xl flex items-center justify-center text-2xl ${
+          <div className={`w-13 h-13 rounded-2xl flex items-center justify-center text-2xl shrink-0 ${
             emptyCount > 0
-              ? 'bg-rose-50 border border-rose-100 text-rose-500'
+              ? 'bg-rose-50 border border-rose-100 text-rose-500 animate-pulse'
               : 'bg-emerald-50 border border-emerald-100 text-emerald-600'
           }`}>
             {emptyCount > 0 ? '⚠️' : '✅'}
