@@ -479,11 +479,37 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
           </div>
 
           {/* Location Selection */}
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <label className="text-xs sm:text-sm font-semibold text-slate-700 flex items-center gap-2">
               <MapPin className="w-4 h-4 text-rose-500" />
               <span>📍 เลือกจุดตู้บริการที่นำสินค้าเข้าบรรจุ *</span>
             </label>
+
+            {locations.some(l => l.status === 'หมดแล้ว') && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-2">
+                <div className="text-xs font-bold text-rose-700 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                  <span>จุดที่ถูกแจ้งของหมดแบบ Real-time ({locations.filter(l => l.status === 'หมดแล้ว').length} จุด) — กดเพื่อเลือกเติมทันที:</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {locations.filter(l => l.status === 'หมดแล้ว').map(loc => (
+                    <button
+                      key={loc.id}
+                      type="button"
+                      onClick={() => setSelectedLocation(loc.name)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                        selectedLocation === loc.name
+                          ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                          : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-100'
+                      }`}
+                    >
+                      ⚠️ {loc.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <select
               value={selectedLocation}
               onChange={(e) => setSelectedLocation(e.target.value)}

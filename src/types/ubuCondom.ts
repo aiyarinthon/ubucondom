@@ -52,3 +52,22 @@ export interface AdminData {
   logs: VolunteerLog[];
   ratings: number[];
 }
+
+export interface RealtimeEventInfo {
+  action: string;
+  message: string;
+  clientId?: string;
+  timestamp: string;
+}
+
+export interface ServerStateSnapshot {
+  initialized: boolean;
+  revision: number;
+  locations: UbuLocation[];
+  volunteerLogs: VolunteerLog[];
+  surveys: SurveyRecord[];
+  gasUrl: string;
+  updatedAt: string;
+  lastEvent?: RealtimeEventInfo | null;
+}
+

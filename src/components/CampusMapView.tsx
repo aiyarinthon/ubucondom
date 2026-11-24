@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import { 
   MapPin, 
@@ -70,7 +70,11 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
   const [mapLayer, setMapLayer] = useState<MapLayerType>('roadmap');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'available' | 'empty'>('all');
-  const [selectedLocation, setSelectedLocation] = useState<UbuLocation | null>(null);
+  const [selectedLocationId, setSelectedLocationId] = useState<string | number | null>(null);
+  const selectedLocation = useMemo(
+    () => locations.find((l) => String(l.id) === String(selectedLocationId)) || null,
+    [locations, selectedLocationId]
+  );
   const [reportingLocation, setReportingLocation] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -333,27 +337,27 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
     });
   };
 
-  // Update Markers on Location or UserCoords change
+  const handleReportEmptyClick = useCallback(async (name: string) => {
+    if (window.confirm(`คุณต้องการส่งรายงานข้อมูล "ถุงยางอนามัยหมด" ณ จุดตู้บริการ:\n${name} ใช่หรือไม่?`)) {
+      setReportingLocation(name);
+      try {
+        await onReportEmpty(name);
+      } finally {
+        setReportingLocation(null);
+      }
+    }
+  }, [onReportEmpty]);
+
+  // Update Markers smoothly in-place on Location, Selection, or UserCoords change (keeps open popups live!)
   useEffect(() => {
-    if (!mapInstanceRef.current || !markersGroupRef.current) return;
+    const map = mapInstanceRef.current;
+    const markersGroup = markersGroupRef.current;
+    if (!map || !markersGroup) return;
 
-    markersGroupRef.current.clearLayers();
-    markerMapRef.current = {};
+    const activeIds = new Set<string>();
 
-    locations.forEach((loc) => {
-      if (!loc.lat || !loc.lng) return;
-
-      const isAvailable = loc.status === 'มีอยู่';
-      const isSelected = selectedLocation?.id === loc.id;
-      const customPin = createGoogleMapsPin(isAvailable, isSelected);
-
-      // Distance from user
-      const distMeters = userCoords ? calculateDistanceMeters(userCoords.lat, userCoords.lng, loc.lat, loc.lng) : null;
-      const distString = distMeters !== null ? formatDistance(distMeters) : null;
-
-      // Google Maps Navigation URL
+    const buildPopupNode = (loc: UbuLocation, isAvailable: boolean, distString: string | null) => {
       const gmapsDirUrl = `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}`;
-
       const popupDiv = document.createElement('div');
       popupDiv.className = 'font-sans p-3 min-w-[260px] max-w-[300px] text-slate-800 bg-white rounded-2xl';
       popupDiv.innerHTML = `
@@ -371,10 +375,16 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
           </span>
         </div>
 
-        <p class="text-xs text-slate-500 mb-3 flex items-start gap-1.5">
+        <p class="text-xs text-slate-500 mb-2 flex items-start gap-1.5">
           <span class="text-slate-400 mt-0.5">📍</span>
           <span>${loc.landmark || 'จุดบริการถุงยางอนามัยฟรี ม.อุบลฯ'}</span>
         </p>
+
+        ${loc.lastUpdated ? `
+          <div class="text-[11px] text-slate-400 font-mono mb-2.5">
+            🕒 อัปเดตล่าสุด: ${loc.lastUpdated}
+          </div>
+        ` : ''}
 
         ${distString ? `
           <div class="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50/80 border border-blue-200/80 rounded-xl text-xs font-bold text-blue-700 mb-3">
@@ -412,17 +422,9 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
         </div>
       `;
 
-      const marker = L.marker([loc.lat, loc.lng], { icon: customPin })
-        .bindPopup(popupDiv, { maxWidth: 320 })
-        .addTo(markersGroupRef.current!);
-
-      marker.on('click', () => {
-        setSelectedLocation(loc);
-      });
-
-      marker.on('popupopen', () => {
+      const bindButton = () => {
         if (isAvailable) {
-          const btn = document.getElementById(`report-empty-btn-${loc.id}`);
+          const btn = popupDiv.querySelector(`#report-empty-btn-${loc.id}`) as HTMLButtonElement | null;
           if (btn) {
             btn.onclick = () => {
               mapInstanceRef.current?.closePopup();
@@ -430,29 +432,60 @@ export const CampusMapView: React.FC<CampusMapViewProps> = ({
             };
           }
         }
-      });
+      };
+      bindButton();
+      return popupDiv;
+    };
 
-      markerMapRef.current[loc.id] = marker;
-    });
-  }, [locations, selectedLocation, userCoords]);
+    locations.forEach((loc) => {
+      if (!loc.lat || !loc.lng) return;
+      const key = String(loc.id);
+      activeIds.add(key);
 
-  const handleReportEmptyClick = async (name: string) => {
-    if (window.confirm(`คุณต้องการส่งรายงานข้อมูล "ถุงยางอนามัยหมด" ณ จุดตู้บริการ:\n${name} ใช่หรือไม่?`)) {
-      setReportingLocation(name);
-      try {
-        await onReportEmpty(name);
-      } finally {
-        setReportingLocation(null);
+      const isAvailable = loc.status === 'มีอยู่';
+      const isSelected = selectedLocationId !== null && String(selectedLocationId) === key;
+      const customPin = createGoogleMapsPin(isAvailable, isSelected);
+
+      const distMeters = userCoords ? calculateDistanceMeters(userCoords.lat, userCoords.lng, loc.lat, loc.lng) : null;
+      const distString = distMeters !== null ? formatDistance(distMeters) : null;
+      const popupNode = buildPopupNode(loc, isAvailable, distString);
+
+      const existingMarker = markerMapRef.current[key];
+      if (existingMarker) {
+        existingMarker.setLatLng([loc.lat, loc.lng]);
+        existingMarker.setIcon(customPin);
+        existingMarker.setPopupContent(popupNode);
+        existingMarker.off('click').on('click', () => {
+          setSelectedLocationId(loc.id);
+        });
+      } else {
+        const marker = L.marker([loc.lat, loc.lng], { icon: customPin })
+          .bindPopup(popupNode, { maxWidth: 320 })
+          .addTo(markersGroup);
+
+        marker.on('click', () => {
+          setSelectedLocationId(loc.id);
+        });
+
+        markerMapRef.current[key] = marker;
       }
-    }
-  };
+    });
+
+    // Clean up removed markers only
+    Object.keys(markerMapRef.current).forEach((key) => {
+      if (!activeIds.has(key)) {
+        markersGroup.removeLayer(markerMapRef.current[key]);
+        delete markerMapRef.current[key];
+      }
+    });
+  }, [locations, selectedLocationId, userCoords, handleReportEmptyClick]);
 
   const handleZoomToLocation = (loc: UbuLocation) => {
-    setSelectedLocation(loc);
+    setSelectedLocationId(loc.id);
     if (mapInstanceRef.current && loc.lat && loc.lng) {
       mapInstanceRef.current.setView([loc.lat, loc.lng], 18, { animate: true });
       
-      const targetMarker = markerMapRef.current[loc.id];
+      const targetMarker = markerMapRef.current[String(loc.id)];
       if (targetMarker) {
         targetMarker.openPopup();
       }

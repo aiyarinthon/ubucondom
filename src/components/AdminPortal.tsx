@@ -387,7 +387,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
         const data = new Uint8Array(evt.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
@@ -418,8 +418,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         }));
 
         if (onBatchImportVolunteerLogs) {
-          onBatchImportVolunteerLogs(importedLogs);
-          alert(`✅ นำเข้าข้อมูลประวัติสำเร็จ ${importedLogs.length} รายการเข้าสู่ตารางเรียบร้อยแล้ว!`);
+          await onBatchImportVolunteerLogs(importedLogs);
         } else {
           alert(`✅ อ่านข้อมูลสำเร็จ ${importedLogs.length} รายการ`);
         }

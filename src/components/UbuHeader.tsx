@@ -18,6 +18,8 @@ interface UbuHeaderProps {
   locations: UbuLocation[];
   isLiveGAS?: boolean;
   isLoading: boolean;
+  realtimeStatus?: 'connected' | 'reconnecting' | 'offline';
+  lastUpdated?: string;
   onRefresh: () => void;
   onOpenConfig?: () => void;
 }
@@ -27,6 +29,8 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
   setActiveTab,
   locations,
   isLoading,
+  realtimeStatus = 'connected',
+  lastUpdated,
   onRefresh,
 }) => {
   const totalCount = locations.length;
@@ -48,12 +52,39 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
               UBU
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-extrabold text-xl sm:text-2xl text-slate-800 group-hover:text-blue-600 tracking-tight transition-colors">
                   UBU Condom
                 </span>
                 <span className="text-xs font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-0.5 rounded-full shrink-0">
                   ม.อุบลฯ
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-full border shrink-0 ${
+                    realtimeStatus === 'connected'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : realtimeStatus === 'reconnecting'
+                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                      : 'bg-rose-50 text-rose-700 border-rose-200'
+                  }`}
+                  title={lastUpdated ? `ซิงค์ล่าสุด: ${lastUpdated}` : 'เชื่อมต่อข้อมูล Real-time'}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      realtimeStatus === 'connected'
+                        ? 'bg-emerald-500 animate-pulse'
+                        : realtimeStatus === 'reconnecting'
+                        ? 'bg-amber-500 animate-ping'
+                        : 'bg-rose-500'
+                    }`}
+                  />
+                  <span>
+                    {realtimeStatus === 'connected'
+                      ? 'Real-time'
+                      : realtimeStatus === 'reconnecting'
+                      ? 'กำลังเชื่อมต่อ...'
+                      : 'ออฟไลน์'}
+                  </span>
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-500 font-medium hidden sm:block">
@@ -125,7 +156,12 @@ export const UbuHeader: React.FC<UbuHeaderProps> = ({
         </div>
 
         {/* Right: Refresh Screen Button (Desktop) */}
-        <div className="hidden md:flex items-center">
+        <div className="hidden md:flex items-center gap-2.5">
+          {lastUpdated && (
+            <span className="text-[11px] font-mono text-slate-400 hidden lg:inline">
+              อัปเดต {lastUpdated}
+            </span>
+          )}
           <button
             onClick={onRefresh}
             disabled={isLoading}

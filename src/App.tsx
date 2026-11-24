@@ -9,7 +9,13 @@ import { CampusMapView } from './components/CampusMapView';
 import { VolunteerPortal } from './components/VolunteerPortal';
 import { AdminPortal } from './components/AdminPortal';
 import { GasUrlModal } from './components/GasUrlModal';
-import { UbuLocation, VolunteerLog, VolunteerFormData, SurveyRecord } from './types/ubuCondom';
+import {
+  UbuLocation,
+  VolunteerLog,
+  VolunteerFormData,
+  SurveyRecord,
+  ServerStateSnapshot,
+} from './types/ubuCondom';
 import { DEFAULT_UBU_LOCATIONS } from './data/defaultLocations';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
@@ -18,6 +24,9 @@ const MOCK_SURVEY_IDS = new Set([
   'sur-101', 'sur-102', 'sur-103', 'sur-104',
   'sur-105', 'sur-106', 'sur-107', 'sur-108',
 ]);
+
+const CLIENT_ID = `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const BROADCAST_CHANNEL_NAME = 'ubu_condom_realtime_v1';
 
 function safeSaveLocal(key: string, value: unknown) {
   try {
@@ -94,6 +103,8 @@ export default function App() {
   }, [surveys]);
 
   const [isLoading, setIsLoading] = useState(false);
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'offline'>('reconnecting');
+  const [lastUpdated, setLastUpdated] = useState<string>('');
 
   // Modal
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -101,19 +112,43 @@ export default function App() {
   // Toast Notification
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+  const lastRevisionRef = useRef<number>(0);
+  const lastToastEventKeyRef = useRef<string>('');
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const wsConnectedRef = useRef<boolean>(false);
+  const sseConnectedRef = useRef<boolean>(false);
+
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToast({ message, type });
-    setTimeout(() => {
+    window.setTimeout(() => {
       setToast(prev => (prev?.message === message ? null : prev));
     }, 4000);
-  };
+  }, []);
 
-  const applyServerSnapshot = useCallback((snapshot: {
-    locations?: UbuLocation[];
-    volunteerLogs?: VolunteerLog[];
-    surveys?: SurveyRecord[];
-    gasUrl?: string;
-  }) => {
+  const updateConnectionStatus = useCallback(() => {
+    if (!navigator.onLine) {
+      setRealtimeStatus('offline');
+    } else if (wsConnectedRef.current || sseConnectedRef.current) {
+      setRealtimeStatus('connected');
+    } else {
+      setRealtimeStatus('reconnecting');
+    }
+  }, []);
+
+  const applyServerSnapshot = useCallback((
+    snapshot: Partial<ServerStateSnapshot>,
+    options: { notifyRemote?: boolean; relayToBroadcastChannel?: boolean } = {}
+  ) => {
+    const incomingRev = Number(snapshot.revision || 0);
+    if (incomingRev > 0 && lastRevisionRef.current > 0 && incomingRev < lastRevisionRef.current) {
+      return;
+    }
+
+    const isNewerRevision = incomingRev > lastRevisionRef.current;
+    if (incomingRev > 0) {
+      lastRevisionRef.current = incomingRev;
+    }
+
     if (Array.isArray(snapshot.locations) && snapshot.locations.length > 0) {
       setLocations(snapshot.locations);
     }
@@ -127,7 +162,31 @@ export default function App() {
       setGasUrl(snapshot.gasUrl);
       localStorage.setItem('ubu_gas_url', snapshot.gasUrl);
     }
-  }, []);
+    if (typeof snapshot.updatedAt === 'string' && snapshot.updatedAt) {
+      setLastUpdated(snapshot.updatedAt);
+    }
+
+    if (
+      options.notifyRemote &&
+      isNewerRevision &&
+      snapshot.lastEvent?.message &&
+      snapshot.lastEvent.clientId !== CLIENT_ID
+    ) {
+      const eventKey = `${incomingRev}:${snapshot.lastEvent.action}`;
+      if (lastToastEventKeyRef.current !== eventKey) {
+        lastToastEventKeyRef.current = eventKey;
+        showToast(`⚡ อัปเดต Real-time: ${snapshot.lastEvent.message}`, 'info');
+      }
+    }
+
+    if (options.relayToBroadcastChannel && broadcastChannelRef.current && incomingRev > 0) {
+      try {
+        broadcastChannelRef.current.postMessage({ type: 'state:sync', data: snapshot });
+      } catch {
+        // Ignore BroadcastChannel serialization errors
+      }
+    }
+  }, [showToast]);
 
   // Sync authoritative state from shared Express server (preserving existing data cleanly)
   const fetchServerData = useCallback(async (silent = false) => {
@@ -178,7 +237,10 @@ export default function App() {
 
             const bootRes = await fetch('/api/bootstrap', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                'x-client-id': CLIENT_ID,
+              },
               body: JSON.stringify({
                 locations: localLocations,
                 volunteerLogs: realLocalLogs,
@@ -189,14 +251,14 @@ export default function App() {
             if (bootRes.ok) {
               const bootData = await bootRes.json();
               if (bootData.success) {
-                applyServerSnapshot(bootData);
+                applyServerSnapshot(bootData, { relayToBroadcastChannel: true });
                 return bootData;
               }
             }
           }
         }
 
-        applyServerSnapshot(data);
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
       }
       return data;
     } catch (err) {
@@ -258,7 +320,7 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [gasUrl, fetchServerData]);
+  }, [gasUrl, fetchServerData, showToast]);
 
   // Initial load from server + optional GAS
   useEffect(() => {
@@ -270,13 +332,59 @@ export default function App() {
     });
   }, []);
 
-  // Live WebSocket connection for instant real-time updates across all clients and tabs
+  // Multi-channel instant Real-Time Synchronization:
+  // 1) WebSocket (/ws) with fast reconnect & heartbeat
+  // 2) Server-Sent Events (/api/events) instant push backup
+  // 3) Cross-tab BroadcastChannel (<1ms local browser tab sync)
   const wsRef = useRef<WebSocket | null>(null);
   useEffect(() => {
     let isDisposed = false;
     let reconnectTimer: number | null = null;
+    let pingTimer: number | null = null;
     let retryAttempt = 0;
 
+    // Cross-tab BroadcastChannel
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
+      broadcastChannelRef.current = bc;
+      bc.onmessage = (ev) => {
+        if (ev?.data?.type === 'state:sync' && ev.data.data) {
+          applyServerSnapshot(ev.data.data, { notifyRemote: true });
+        }
+      };
+    }
+
+    // Server-Sent Events (SSE) stream
+    let eventSource: EventSource | null = null;
+    if (typeof EventSource !== 'undefined') {
+      eventSource = new EventSource('/api/events');
+      eventSource.onopen = () => {
+        sseConnectedRef.current = true;
+        updateConnectionStatus();
+      };
+      eventSource.addEventListener('state:init', (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data?.initialized || lastRevisionRef.current === 0) {
+            applyServerSnapshot(data);
+          }
+        } catch {}
+      });
+      eventSource.addEventListener('state:sync', (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data?.initialized) {
+            applyServerSnapshot(data, { notifyRemote: true, relayToBroadcastChannel: true });
+          }
+        } catch {}
+      });
+      eventSource.onerror = () => {
+        sseConnectedRef.current = false;
+        updateConnectionStatus();
+      };
+    }
+
+    // Primary WebSocket (/ws)
     const connectWebSocket = () => {
       if (isDisposed) return;
 
@@ -287,17 +395,28 @@ export default function App() {
 
       socket.onopen = () => {
         retryAttempt = 0;
-        // Re-verify bootstrap/sync once connected
+        wsConnectedRef.current = true;
+        updateConnectionStatus();
         fetchServerData(true);
+
+        if (pingTimer !== null) window.clearInterval(pingTimer);
+        pingTimer = window.setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 18000);
       };
 
       socket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if ((msg?.type === 'state:sync' || msg?.type === 'state:init') && msg.data) {
-            // Do not overwrite uninitialized local data with empty server store before bootstrap completes
-            if (msg.data.initialized) {
+          if (msg?.type === 'state:init' && msg.data) {
+            if (msg.data.initialized || lastRevisionRef.current === 0) {
               applyServerSnapshot(msg.data);
+            }
+          } else if (msg?.type === 'state:sync' && msg.data) {
+            if (msg.data.initialized) {
+              applyServerSnapshot(msg.data, { notifyRemote: true, relayToBroadcastChannel: true });
             }
           }
         } catch {
@@ -309,8 +428,14 @@ export default function App() {
         if (wsRef.current === socket) {
           wsRef.current = null;
         }
+        wsConnectedRef.current = false;
+        updateConnectionStatus();
+        if (pingTimer !== null) {
+          window.clearInterval(pingTimer);
+          pingTimer = null;
+        }
         if (isDisposed) return;
-        const delayMs = Math.min(10000, 1000 * Math.pow(2, retryAttempt));
+        const delayMs = Math.min(5000, 300 * Math.pow(2, retryAttempt));
         retryAttempt += 1;
         reconnectTimer = window.setTimeout(connectWebSocket, delayMs);
       };
@@ -323,6 +448,7 @@ export default function App() {
     connectWebSocket();
 
     const handleReconnectCheck = () => {
+      updateConnectionStatus();
       if (document.visibilityState === 'visible') {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: 'state:request' }));
@@ -332,26 +458,40 @@ export default function App() {
       }
     };
 
+    const handleOffline = () => {
+      wsConnectedRef.current = false;
+      sseConnectedRef.current = false;
+      setRealtimeStatus('offline');
+    };
+
     window.addEventListener('focus', handleReconnectCheck);
     window.addEventListener('online', handleReconnectCheck);
+    window.addEventListener('offline', handleOffline);
     document.addEventListener('visibilitychange', handleReconnectCheck);
 
     return () => {
       isDisposed = true;
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-      }
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      if (pingTimer !== null) window.clearInterval(pingTimer);
       window.removeEventListener('focus', handleReconnectCheck);
       window.removeEventListener('online', handleReconnectCheck);
+      window.removeEventListener('offline', handleOffline);
       document.removeEventListener('visibilitychange', handleReconnectCheck);
+      if (eventSource) {
+        eventSource.close();
+      }
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.close();
+        broadcastChannelRef.current = null;
+      }
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
     };
-  }, [applyServerSnapshot, fetchServerData]);
+  }, [applyServerSnapshot, fetchServerData, updateConnectionStatus]);
 
-  // Sync latest snapshot when switching tabs as an extra safeguard
+  // Sync latest snapshot when switching tabs
   useEffect(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'state:request' }));
@@ -365,11 +505,18 @@ export default function App() {
     setGasUrl(newUrl);
     localStorage.setItem('ubu_gas_url', newUrl);
     try {
-      await fetch('/api/config/gas-url', {
+      const res = await fetch('/api/config/gas-url', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify({ gasUrl: newUrl }),
       });
+      const data = await res.json();
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
+      }
     } catch {}
     if (newUrl) {
       await handleFetchFromGas(newUrl);
@@ -385,15 +532,19 @@ export default function App() {
     try {
       const response = await fetch('/api/report-empty', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify({ locationName }),
       });
       const resJson = await response.json();
-      if (resJson.success && Array.isArray(resJson.locations)) {
-        setLocations(resJson.locations);
+      if (resJson.success) {
+        applyServerSnapshot(resJson, { relayToBroadcastChannel: true });
       }
       showToast(resJson.message || `อัปเดตสถานะจุด "${locationName}" เป็น 'หมดแล้ว' อัตโนมัติเรียบร้อยแล้ว`, 'success');
     } catch {
+      await fetchServerData(true);
       showToast('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์กลางได้ โปรดลองใหม่อีกครั้ง', 'error');
     }
   };
@@ -403,16 +554,17 @@ export default function App() {
     try {
       const response = await fetch('/api/survey', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify({ rating, feedback }),
       });
       const resJson = await response.json();
       if (!response.ok || !resJson.success) {
         throw new Error(resJson.error || 'บันทึกแบบประเมินไม่สำเร็จ');
       }
-      if (Array.isArray(resJson.surveys)) {
-        setSurveys(resJson.surveys);
-      }
+      applyServerSnapshot(resJson, { relayToBroadcastChannel: true });
       showToast('บันทึกแบบประเมินเรียบร้อยแล้ว ขอบคุณสำหรับความคิดเห็นครับ', 'success');
     } catch (err: any) {
       showToast(err.message || 'ไม่สามารถส่งแบบประเมินไปยังเซิร์ฟเวอร์ได้', 'error');
@@ -429,7 +581,10 @@ export default function App() {
   ) => {
     const response = await fetch('/api/volunteer', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client-id': CLIENT_ID,
+      },
       body: JSON.stringify({
         formData,
         photoBase64,
@@ -449,12 +604,7 @@ export default function App() {
       throw new Error(resJson.error || 'ไม่สามารถบันทึกข้อมูลไปยังระบบหลังบ้านได้ โปรดลองใหม่อีกครั้ง');
     }
 
-    if (Array.isArray(resJson.locations)) {
-      setLocations(resJson.locations);
-    }
-    if (Array.isArray(resJson.volunteerLogs)) {
-      setVolunteerLogs(resJson.volunteerLogs);
-    }
+    applyServerSnapshot(resJson, { relayToBroadcastChannel: true });
 
     showToast(
       resJson.message || `บันทึกเติมของสำเร็จ! อัปเดตสถานะจุด "${formData.location}" เป็น 'มีอยู่' อัตโนมัติแล้ว`,
@@ -462,20 +612,26 @@ export default function App() {
     );
   };
 
-  // 4. Admin manual toggle status
+  // 4. Admin manual toggle status (optimistic + instant broadcast)
   const handleToggleLocationStatus = async (locationName: string, currentStatus: string) => {
+    const optimisticNext = currentStatus === 'มีอยู่' ? 'หมดแล้ว' : 'มีอยู่';
+    setLocations(prev => prev.map(loc => loc.name === locationName ? { ...loc, status: optimisticNext } : loc));
     try {
       const res = await fetch('/api/admin/locations/toggle', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify({ locationName, currentStatus }),
       });
       const data = await res.json();
-      if (data.success && Array.isArray(data.locations)) {
-        setLocations(data.locations);
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast(`ปรับสถานะจุด "${locationName}" เป็น "${data.nextStatus}" เรียบร้อยแล้ว`, 'success');
       }
     } catch {
+      await fetchServerData(true);
       showToast('เกิดข้อผิดพลาดในการปรับสถานะ', 'error');
     }
   };
@@ -485,12 +641,15 @@ export default function App() {
     try {
       const res = await fetch('/api/admin/locations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify(newLoc),
       });
       const data = await res.json();
-      if (data.success && Array.isArray(data.locations)) {
-        setLocations(data.locations);
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast(`เพิ่มจุดติดตั้ง "${newLoc.name}" เรียบร้อยแล้ว`, 'success');
       }
     } catch {
@@ -500,18 +659,23 @@ export default function App() {
 
   // 6. Admin Edit Location
   const handleEditLocation = async (id: string | number, updated: Partial<UbuLocation>) => {
+    setLocations(prev => prev.map(loc => String(loc.id) === String(id) ? { ...loc, ...updated } : loc));
     try {
       const res = await fetch(`/api/admin/locations/${encodeURIComponent(String(id))}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify(updated),
       });
       const data = await res.json();
-      if (data.success && Array.isArray(data.locations)) {
-        setLocations(data.locations);
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast('บันทึกการแก้ไขจุดติดตั้งเรียบร้อยแล้ว', 'success');
       }
     } catch {
+      await fetchServerData(true);
       showToast('ไม่สามารถบันทึกการแก้ไขจุดติดตั้งได้', 'error');
     }
   };
@@ -519,16 +683,19 @@ export default function App() {
   // 7. Admin Delete Location
   const handleDeleteLocation = async (id: string | number) => {
     const target = locations.find(l => l.id === id);
+    setLocations(prev => prev.filter(l => String(l.id) !== String(id)));
     try {
       const res = await fetch(`/api/admin/locations/${encodeURIComponent(String(id))}`, {
         method: 'DELETE',
+        headers: { 'x-client-id': CLIENT_ID },
       });
       const data = await res.json();
-      if (data.success && Array.isArray(data.locations)) {
-        setLocations(data.locations);
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast(`ลบจุดติดตั้ง "${target?.name || ''}" ออกจากระบบแล้ว`, 'info');
       }
     } catch {
+      await fetchServerData(true);
       showToast('ไม่สามารถลบจุดติดตั้งได้', 'error');
     }
   };
@@ -536,10 +703,13 @@ export default function App() {
   // 8. Admin Reset Default Locations
   const handleResetDefaultLocations = async () => {
     try {
-      const res = await fetch('/api/admin/locations/reset', { method: 'POST' });
+      const res = await fetch('/api/admin/locations/reset', {
+        method: 'POST',
+        headers: { 'x-client-id': CLIENT_ID },
+      });
       const data = await res.json();
-      if (data.success && Array.isArray(data.locations)) {
-        setLocations(data.locations);
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast('คืนค่าจุดติดตั้งกลับเป็น 15 จุดเริ่มต้นของ ม.อุบลฯ เรียบร้อยแล้ว', 'info');
       }
     } catch {
@@ -549,14 +719,19 @@ export default function App() {
 
   // 9. Admin Delete Single Volunteer Log
   const handleDeleteVolunteerLog = async (id: string) => {
+    setVolunteerLogs(prev => prev.filter(log => log.id !== id));
     try {
-      const res = await fetch(`/api/admin/logs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/admin/logs/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'x-client-id': CLIENT_ID },
+      });
       const data = await res.json();
-      if (data.success && Array.isArray(data.volunteerLogs)) {
-        setVolunteerLogs(data.volunteerLogs);
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast('ลบรายการประวัติการเติมเรียบร้อยแล้ว', 'info');
       }
     } catch {
+      await fetchServerData(true);
       showToast('ไม่สามารถลบรายการประวัติการเติมได้', 'error');
     }
   };
@@ -566,13 +741,15 @@ export default function App() {
     try {
       const res = await fetch('/api/admin/logs/add', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify(newLogData),
       });
       const data = await res.json();
       if (data.success) {
-        if (Array.isArray(data.locations)) setLocations(data.locations);
-        if (Array.isArray(data.volunteerLogs)) setVolunteerLogs(data.volunteerLogs);
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast(`เพิ่มยอดเติมสำหรับจุด "${newLogData.location}" เรียบร้อยแล้ว`, 'success');
       }
     } catch {
@@ -586,13 +763,15 @@ export default function App() {
     try {
       const res = await fetch('/api/admin/logs/batch', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-client-id': CLIENT_ID,
+        },
         body: JSON.stringify({ logs: importedLogs }),
       });
       const data = await res.json();
       if (data.success) {
-        if (Array.isArray(data.locations)) setLocations(data.locations);
-        if (Array.isArray(data.volunteerLogs)) setVolunteerLogs(data.volunteerLogs);
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         const added = Number(data.addedCount ?? importedLogs.length);
         const skipped = Number(data.skippedCount ?? 0);
         showToast(
@@ -613,12 +792,15 @@ export default function App() {
       try {
         const res = await fetch('/api/admin/logs/clear-location', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-client-id': CLIENT_ID,
+          },
           body: JSON.stringify({ locationName }),
         });
         const data = await res.json();
-        if (data.success && Array.isArray(data.volunteerLogs)) {
-          setVolunteerLogs(data.volunteerLogs);
+        if (data.success) {
+          applyServerSnapshot(data, { relayToBroadcastChannel: true });
           showToast(`ลบประวัติยอดเติมของจุด "${locationName}" ทั้งหมดเรียบร้อยแล้ว`, 'info');
         }
       } catch {
@@ -630,14 +812,19 @@ export default function App() {
   // 10. Admin Clear All Volunteer Logs
   const handleClearAllVolunteerLogs = async () => {
     if (window.confirm('คุณต้องการลบประวัติการเติมของจิตอาสา "ทั้งหมด" ใช่หรือไม่?')) {
+      setVolunteerLogs([]);
       try {
-        const res = await fetch('/api/admin/logs', { method: 'DELETE' });
+        const res = await fetch('/api/admin/logs', {
+          method: 'DELETE',
+          headers: { 'x-client-id': CLIENT_ID },
+        });
         const data = await res.json();
         if (data.success) {
-          setVolunteerLogs([]);
+          applyServerSnapshot(data, { relayToBroadcastChannel: true });
           showToast('ลบประวัติการเติมทั้งหมดเรียบร้อยแล้ว', 'info');
         }
       } catch {
+        await fetchServerData(true);
         showToast('ไม่สามารถลบประวัติทั้งหมดได้', 'error');
       }
     }
@@ -645,14 +832,19 @@ export default function App() {
 
   // 12. Admin Delete Single Survey Record
   const handleDeleteSurvey = async (id: string) => {
+    setSurveys(prev => prev.filter(s => s.id !== id));
     try {
-      const res = await fetch(`/api/admin/surveys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/admin/surveys/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'x-client-id': CLIENT_ID },
+      });
       const data = await res.json();
-      if (data.success && Array.isArray(data.surveys)) {
-        setSurveys(data.surveys);
+      if (data.success) {
+        applyServerSnapshot(data, { relayToBroadcastChannel: true });
         showToast('ลบรายการผลประเมินเรียบร้อยแล้ว', 'info');
       }
     } catch {
+      await fetchServerData(true);
       showToast('ไม่สามารถลบรายการผลประเมินได้', 'error');
     }
   };
@@ -660,14 +852,19 @@ export default function App() {
   // 13. Admin Clear All Surveys
   const handleClearAllSurveys = async () => {
     if (window.confirm('คุณต้องการลบข้อมูลประเมินความพึงพอใจและข้อคิดเห็น "ทั้งหมด" ใช่หรือไม่?')) {
+      setSurveys([]);
       try {
-        const res = await fetch('/api/admin/surveys', { method: 'DELETE' });
+        const res = await fetch('/api/admin/surveys', {
+          method: 'DELETE',
+          headers: { 'x-client-id': CLIENT_ID },
+        });
         const data = await res.json();
         if (data.success) {
-          setSurveys([]);
+          applyServerSnapshot(data, { relayToBroadcastChannel: true });
           showToast('ลบข้อมูลการประเมินทั้งหมดเรียบร้อยแล้ว', 'info');
         }
       } catch {
+        await fetchServerData(true);
         showToast('ไม่สามารถลบข้อมูลการประเมินทั้งหมดได้', 'error');
       }
     }
@@ -689,6 +886,8 @@ export default function App() {
           locations={locations}
           isLiveGAS={Boolean(gasUrl)}
           isLoading={isLoading}
+          realtimeStatus={realtimeStatus}
+          lastUpdated={lastUpdated}
           onRefresh={() => handleFetchFromGas(gasUrl)}
           onOpenConfig={() => setIsConfigModalOpen(true)}
         />
