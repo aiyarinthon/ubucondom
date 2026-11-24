@@ -224,6 +224,10 @@ export default function App() {
     try {
       const res = await fetch('/api/data', { cache: 'no-store' });
       if (!res.ok) throw new Error(`Server HTTP ${res.status}`);
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Invalid non-JSON response from /api/data');
+      }
       const data = await res.json();
       if (data.success) {
         // One-time safe migration if server store is brand new & browser already has real saved data
@@ -357,12 +361,24 @@ export default function App() {
     }
   }, [gasUrl, fetchServerData, showToast]);
 
-  // Clear legacy mock rating keys & load authoritative current state from server
+  // Clear legacy mock rating keys & load authoritative current state from server (with fast cold-start retry)
   useEffect(() => {
     try {
       localStorage.removeItem('ubu_ratings_data');
     } catch {}
-    fetchServerData(true);
+    let cancelled = false;
+    let fastRetryTimer: number | null = null;
+    fetchServerData(true).then((res) => {
+      if (!cancelled && !res) {
+        fastRetryTimer = window.setTimeout(() => {
+          if (!cancelled) fetchServerData(true);
+        }, 1000);
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (fastRetryTimer !== null) window.clearTimeout(fastRetryTimer);
+    };
   }, [fetchServerData]);
 
   // Multi-channel instant Real-Time Synchronization:
@@ -685,15 +701,19 @@ export default function App() {
       }),
     });
 
+    const rawText = await response.text();
     let resJson: any = {};
     try {
-      resJson = await response.json();
+      resJson = rawText ? JSON.parse(rawText) : {};
     } catch {
-      throw new Error('เซิร์ฟเวอร์ตอบกลับผิดพลาด ไม่สามารถบันทึกข้อมูลได้');
+      if (response.status === 413) {
+        throw new Error('ขนาดรูปภาพใหญ่เกินขีดจำกัดเซิร์ฟเวอร์ (เกิน 4MB) โปรดเลือกรูปที่เล็กลงหรืออัปโหลดใหม่');
+      }
+      throw new Error(`เซิร์ฟเวอร์ตอบกลับผิดพลาด (HTTP ${response.status || 'Unknown'}) ไม่สามารถบันทึกข้อมูลได้`);
     }
 
     if (!response.ok || !resJson.success) {
-      throw new Error(resJson.error || 'ไม่สามารถบันทึกข้อมูลไปยังระบบหลังบ้านได้ โปรดลองใหม่อีกครั้ง');
+      throw new Error(resJson.error || `ไม่สามารถบันทึกข้อมูลได้ (HTTP ${response.status})`);
     }
 
     applyServerSnapshot(resJson, { relayToBroadcastChannel: true });

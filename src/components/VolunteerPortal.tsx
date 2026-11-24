@@ -108,7 +108,7 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
   // Add new volunteer member
   const handleAddMember = () => {
     if (members.length >= 10) {
-      alert('สามารถเพิ่มรายชื่อจิตอาสาได้สูงสุด 10 คนต่อรอบ');
+      setSubmitError('สามารถเพิ่มรายชื่อจิตอาสาได้สูงสุด 10 คนต่อรอบ');
       return;
     }
     const newId = `vol-${Date.now()}-${members.length + 1}`;
@@ -127,7 +127,7 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
   // Remove volunteer member
   const handleRemoveMember = (id: string) => {
     if (members.length <= 1) {
-      alert('ต้องมีข้อมูลจิตอาสาอย่างน้อย 1 ท่าน');
+      setSubmitError('ต้องมีข้อมูลจิตอาสาอย่างน้อย 1 ท่าน');
       return;
     }
     setMembers(prev => prev.filter(m => m.id !== id));
@@ -144,6 +144,7 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setSubmitError(null);
     setPhotoFileName(file.name);
 
     const reader = new FileReader();
@@ -168,7 +169,13 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.72);
+          let quality = 0.72;
+          let compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          // Keep payload safely under serverless 4.5MB request limit
+          while (compressedDataUrl.length > 2_500_000 && quality > 0.35) {
+            quality -= 0.12;
+            compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+          }
           setPhotoPreview(compressedDataUrl);
           setPhotoMimeType('image/jpeg');
           setPhotoBase64(compressedDataUrl.split(',')[1]);
@@ -179,9 +186,17 @@ export const VolunteerPortal: React.FC<VolunteerPortalProps> = ({
         }
       };
       img.onerror = () => {
+        const base64Part = result.split(',')[1] || '';
+        if (base64Part.length > 3_500_000) {
+          setSubmitError('ไฟล์รูปภาพมีขนาดใหญ่เกินไปหรือรูปแบบไม่รองรับ โปรดใช้ไฟล์ JPG/PNG ขนาดไม่เกิน 3MB');
+          setPhotoPreview(null);
+          setPhotoBase64(null);
+          setPhotoFileName('');
+          return;
+        }
         setPhotoPreview(result);
         setPhotoMimeType(file.type || 'image/jpeg');
-        setPhotoBase64(result.split(',')[1]);
+        setPhotoBase64(base64Part);
       };
       img.src = result;
     };

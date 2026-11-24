@@ -207,6 +207,24 @@ async function forwardToGas(targetUrl: string, payload: Record<string, any>): Pr
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
+// Handle pre-parsed bodies from serverless runtimes (e.g., Vercel @vercel/node) cleanly
+app.use((req: Request, _res: Response, next) => {
+  const anyReq = req as any;
+  if (anyReq.body !== undefined) {
+    if (typeof anyReq.body === 'string' && req.headers['content-type']?.includes('application/json')) {
+      try {
+        anyReq.body = JSON.parse(anyReq.body);
+      } catch {
+        // Let express.json handle malformed strings if needed
+      }
+    }
+    if (typeof anyReq.body === 'object' && anyReq.body !== null) {
+      anyReq._body = true;
+    }
+  }
+  next();
+});
+
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
@@ -528,9 +546,15 @@ app.post('/api/volunteer', (req: Request, res: Response) => {
     imageUrl: initialImageUrl,
   };
 
-  store.locations = store.locations.map(loc =>
-    loc.name === formData.location ? { ...loc, status: 'มีอยู่', lastUpdated: now } : loc
-  );
+  let matchedLocationName = String(formData.location).trim();
+  store.locations = store.locations.map(loc => {
+    if (isMatchingLocation(loc, matchedLocationName)) {
+      matchedLocationName = loc.name;
+      return { ...loc, status: 'มีอยู่', lastUpdated: now };
+    }
+    return loc;
+  });
+  newLog.location = matchedLocationName;
   store.volunteerLogs = [newLog, ...store.volunteerLogs];
   store.initialized = true;
   saveStore(store);
@@ -859,6 +883,20 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// Ensure all Express errors on /api/* return structured JSON instead of HTML error pages
+app.use((err: any, req: Request, res: Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/api')) {
+    const status = Number(err?.status || err?.statusCode) || 500;
+    return res.status(status).json({
+      success: false,
+      error: status === 413
+        ? 'ขนาดรูปภาพหรือข้อมูลใหญ่เกินไป โปรดลดขนาดไฟล์แล้วลองใหม่อีกครั้ง'
+        : (err?.message || 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์'),
+    });
+  }
+  return next(err);
+});
+
 async function startServer() {
   if (!httpServer) return;
 
@@ -871,7 +909,10 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.join(process.cwd(), 'dist')));
-    app.get('*', (_req, res) => {
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ success: false, error: 'API endpoint not found' });
+      }
       res.sendFile(path.join(process.cwd(), 'dist', 'index.html'));
     });
   }
